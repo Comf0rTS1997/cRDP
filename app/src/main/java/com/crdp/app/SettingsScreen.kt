@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Mouse
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Vibration
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
@@ -58,6 +59,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.dp
 import com.crdp.app.prefs.AppSettings
@@ -71,6 +73,7 @@ import com.crdp.app.prefs.KeyboardLayouts
 import com.crdp.app.prefs.RenderBackends
 import com.crdp.app.prefs.RenderSamplingOptions
 import com.crdp.app.prefs.Resolutions
+import com.crdp.app.R
 import kotlinx.coroutines.launch
 
 private sealed interface ChooserKind {
@@ -111,6 +114,7 @@ fun SettingsScreen(
     onDefaultMicrophoneEnabled: (Boolean) -> Unit,
     onDefaultAudioQuality: (String) -> Unit,
     onDefaultCameraMode: (String) -> Unit,
+    onDefaultClipboardSync: (Boolean) -> Unit,
     onOpenVault: () -> Unit,
     onOpenLicenses: () -> Unit,
     versionLabel: String,
@@ -181,6 +185,17 @@ fun SettingsScreen(
                 subtitle = "Used while the device is in Samsung DeX",
                 value = DpiScales.label(appSettings.dexDpiScale),
                 onClick = { chooser = ChooserKind.DexDpi },
+            )
+            SettingRow(
+                icon = Icons.Default.ContentPaste,
+                title = stringResource(R.string.settings_clipboard_sync_title),
+                subtitle = stringResource(R.string.settings_clipboard_sync_subtitle),
+                trailing = {
+                    Switch(
+                        checked = appSettings.defaultClipboardSync,
+                        onCheckedChange = onDefaultClipboardSync,
+                    )
+                },
             )
 
             SectionHeader("Audio")

@@ -45,6 +45,8 @@ data class EditorUiState(
     val audioMode: AudioMode = AudioMode.UseAppDefault,
     /** null = use app default; true/false = explicit override. */
     val microphoneOverride: Boolean? = null,
+    /** null = use app default; plain-text clipboard with remote (direct RDP). */
+    val clipboardSyncOverride: Boolean? = null,
     val audioQuality: AudioQuality = AudioQuality.UseAppDefault,
     val cameraMode: CameraMode = CameraMode.UseAppDefault,
     /** Native rdpecam device id when cameraMode == Specific; null otherwise. */
@@ -101,6 +103,7 @@ class ConnectionEditorViewModel @Inject constructor(
     fun updateRequireBiometric(value: Boolean) = _state.update { it.copy(requireBiometric = value) }
     fun updateAudioMode(value: AudioMode) = _state.update { it.copy(audioMode = value) }
     fun updateMicrophoneOverride(value: Boolean?) = _state.update { it.copy(microphoneOverride = value) }
+    fun updateClipboardSyncOverride(value: Boolean?) = _state.update { it.copy(clipboardSyncOverride = value) }
     fun updateAudioQuality(value: AudioQuality) = _state.update { it.copy(audioQuality = value) }
     fun updateCameraMode(value: CameraMode) = _state.update { it.copy(cameraMode = value) }
     fun updateCameraDeviceId(value: String?) = _state.update { it.copy(cameraDeviceId = value?.takeIf { v -> v.isNotBlank() }) }
@@ -127,6 +130,7 @@ class ConnectionEditorViewModel @Inject constructor(
                     requireBiometric = s.requireBiometric,
                     audioMode = s.audioMode,
                     microphoneOverride = s.microphoneOverride,
+                    clipboardSyncOverride = s.clipboardSyncOverride,
                     audioQuality = s.audioQuality,
                     cameraMode = s.cameraMode,
                     cameraDeviceId = s.cameraDeviceId,
@@ -145,6 +149,7 @@ class ConnectionEditorViewModel @Inject constructor(
                     requireBiometric = s.requireBiometric,
                     audioMode = s.audioMode,
                     microphoneOverride = s.microphoneOverride,
+                    clipboardSyncOverride = s.clipboardSyncOverride,
                     audioQuality = s.audioQuality,
                     cameraMode = s.cameraMode,
                     cameraDeviceId = s.cameraDeviceId,
@@ -178,6 +183,7 @@ class ConnectionEditorViewModel @Inject constructor(
             requireBiometric = p.requireBiometric,
             audioMode = p.audioMode,
             microphoneOverride = p.microphoneOverride,
+            clipboardSyncOverride = p.clipboardSyncOverride,
             audioQuality = p.audioQuality,
             cameraMode = p.cameraMode,
             cameraDeviceId = p.cameraDeviceId,
@@ -198,6 +204,7 @@ class ConnectionEditorViewModel @Inject constructor(
             requireBiometric = p.requireBiometric,
             audioMode = p.audioMode,
             microphoneOverride = p.microphoneOverride,
+            clipboardSyncOverride = p.clipboardSyncOverride,
             audioQuality = p.audioQuality,
             cameraMode = p.cameraMode,
             cameraDeviceId = p.cameraDeviceId,

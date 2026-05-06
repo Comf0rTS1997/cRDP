@@ -41,6 +41,8 @@ data class DirectConnectionProfile(
     val audioMode: AudioMode = AudioMode.UseAppDefault,
     /** null = use app default; true/false = explicit override. */
     val microphoneOverride: Boolean? = null,
+    /** null = use app default; sync plain text with the remote clipboard (direct RDP only). */
+    val clipboardSyncOverride: Boolean? = null,
     val audioQuality: AudioQuality = AudioQuality.UseAppDefault,
     val cameraMode: CameraMode = CameraMode.UseAppDefault,
     /** Concrete native device id when [cameraMode] == Specific; null otherwise. */
@@ -63,6 +65,7 @@ data class GatewayConnectionProfile(
     val desktopScaleFactor: Int = 0,
     val audioMode: AudioMode = AudioMode.UseAppDefault,
     val microphoneOverride: Boolean? = null,
+    val clipboardSyncOverride: Boolean? = null,
     val audioQuality: AudioQuality = AudioQuality.UseAppDefault,
     val cameraMode: CameraMode = CameraMode.UseAppDefault,
     val cameraDeviceId: String? = null,

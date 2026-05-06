@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">cRdp</string>
+    <string name="settings_clipboard_sync_title">Clipboard sync</string>
+    <string name="settings_clipboard_sync_subtitle">Two-way plain text between this device and the remote desktop (direct connections)</string>
 </resources>

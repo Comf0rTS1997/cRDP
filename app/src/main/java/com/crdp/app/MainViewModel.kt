@@ -126,6 +126,10 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch { userPreferencesRepository.setDefaultCameraDeviceId(value) }
     }
 
+    fun setDefaultClipboardSync(value: Boolean) {
+        viewModelScope.launch { userPreferencesRepository.setDefaultClipboardSync(value) }
+    }
+
     private val _vaultUnlockedAt = MutableStateFlow<Long?>(null)
     val vaultUnlockedAt = _vaultUnlockedAt.asStateFlow()
 

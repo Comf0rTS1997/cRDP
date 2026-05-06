@@ -1,6 +1,7 @@
 package com.crdp.feature.session
 
 import android.app.Activity
+import android.os.Build
 import android.util.Log
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -409,6 +410,32 @@ private fun SessionScreen(
             val activity = context as? Activity ?: return@onDispose
             val controller = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
             controller.show(WindowInsetsCompat.Type.systemBars())
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && view.hasPointerCapture()) {
+                runCatching { view.releasePointerCapture() }
+            }
+        }
+    }
+
+    // Capture relative mouse on the Compose root so pointer events stay in-window (DeX task bar, etc.)
+    // without moving focus off the key-handling surface (see focusRequester above).
+    val sessionConnected = sessionState is SessionState.Connected
+    DisposableEffect(sessionConnected, view) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            return@DisposableEffect onDispose { }
+        }
+        if (!sessionConnected) {
+            return@DisposableEffect onDispose { }
+        }
+        val request = Runnable {
+            runCatching {
+                if (view.isAttachedToWindow) view.requestPointerCapture()
+            }
+        }
+        view.post(request)
+        onDispose {
+            runCatching {
+                if (view.hasPointerCapture()) view.releasePointerCapture()
+            }
         }
     }
 
@@ -447,6 +474,7 @@ private fun SessionScreen(
                             keyCode = native.keyCode,
                             metaState = native.metaState,
                             action = action,
+                            scanCode = native.scanCode,
                         ),
                     )
                 }
@@ -883,6 +911,7 @@ private fun SessionScreen(
                                             keyCode = ke.keyCode,
                                             metaState = ke.metaState,
                                             action = kAction,
+                                            scanCode = ke.scanCode,
                                         ),
                                     )
                                 }
@@ -902,6 +931,7 @@ private fun SessionScreen(
                                 keyCode = keyCode,
                                 metaState = event.metaState,
                                 action = kAction,
+                                scanCode = event.scanCode,
                             ),
                         )
                         true

@@ -160,7 +160,8 @@ class GatewayRdpSession @Inject constructor(
 
     override fun onKeyEvent(event: KeyEventPayload) {
         val ws = webSocket ?: return
-        val payload = "K:${event.keyCode},${event.metaState}"
+        // K: keyCode, metaState, actionOrdinal (0=Down,1=Up), scanCode — first two fields match legacy clients.
+        val payload = "K:${event.keyCode},${event.metaState},${event.action.ordinal},${event.scanCode}"
         val bb = payload.encodeToByteArray()
         bytesSent += bb.size
         ws.send(bb.toByteString())

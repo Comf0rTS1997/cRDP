@@ -53,6 +53,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -60,6 +62,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
@@ -89,6 +92,8 @@ import com.crdp.core.rdp.input.KeyAction
 import com.crdp.core.rdp.input.KeyEventPayload
 import com.crdp.core.rdp.input.PointerAction
 import com.crdp.core.rdp.input.PointerEvent
+import com.crdp.core.rdp.input.RemoteTouchPhase
+import com.crdp.core.rdp.input.TouchContact
 import com.crdp.core.rdp.model.AudioMode
 import com.crdp.core.rdp.model.AudioQuality
 import com.crdp.core.rdp.model.ConnectionProfile
@@ -107,10 +112,24 @@ import kotlinx.coroutines.launch
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.math.roundToInt
 
 private val DockBackground = Color(0xAA000000)
 private val DisconnectRed = Color(0xFFBA1A1A)
+
+private class TrackpadMultiFingerState {
+    var pinchActive: Boolean = false
+    var hadScroll: Boolean = false
+    var scrollAccX: Float = 0f
+    var scrollAccY: Float = 0f
+    var lastCentroid: Offset? = null
+    var lastSpan: Float = 0f
+    var twoFingerStartMs: Long = 0L
+    var twoFingerOrigin: Offset? = null
+    var prevCanvasPressed: Int = 0
+    var trackpadDragging: Boolean = false
+}
 
 enum class InputMode { DirectTouch, Trackpad }
 
@@ -362,6 +381,37 @@ private fun SessionScreen(
         computeRdpTransform(surfaceW, surfaceH, rdpW, rdpH)
     }
 
+    /** Local pinch zoom of the session view (trackpad mode); does not change RDP resolution. */
+    var viewZoom by remember { mutableFloatStateOf(1f) }
+    var viewPan by remember { mutableStateOf(Offset.Zero) }
+    val viewZoomState = rememberUpdatedState(viewZoom)
+    val viewPanState = rememberUpdatedState(viewPan)
+
+    fun toRdpClient(sx: Float, sy: Float): Pair<Float, Float> {
+        val z = transform.scale * viewZoomState.current
+        val ox = transform.offsetX + viewPanState.current.x
+        val oy = transform.offsetY + viewPanState.current.y
+        return (sx - ox) / z to (sy - oy) / z
+    }
+
+    fun rdpToScreenClient(rdpX: Float, rdpY: Float): Offset {
+        val z = transform.scale * viewZoomState.current
+        val ox = transform.offsetX + viewPanState.current.x
+        val oy = transform.offsetY + viewPanState.current.y
+        return Offset(rdpX * z + ox, rdpY * z + oy)
+    }
+
+    fun adjustPanForPinch(focal: Offset, oldZoom: Float, newZoom: Float, pan: Offset): Offset {
+        val s0 = transform.scale * oldZoom
+        val rdpX = (focal.x - transform.offsetX - pan.x) / s0
+        val rdpY = (focal.y - transform.offsetY - pan.y) / s0
+        val s1 = transform.scale * newZoom
+        return Offset(
+            focal.x - rdpX * s1 - transform.offsetX,
+            focal.y - rdpY * s1 - transform.offsetY,
+        )
+    }
+
     // Input mode: Trackpad (relative movement) or DirectTouch (absolute mapped to RDP).
     var inputMode by remember {
         mutableStateOf(if (settings.touchAsMouse) InputMode.Trackpad else InputMode.DirectTouch)
@@ -375,6 +425,7 @@ private fun SessionScreen(
     var fingerDownX by remember { mutableStateOf(0f) }
     var fingerDownY by remember { mutableStateOf(0f) }
     val tapThresholdPx = with(density) { 12.dp.toPx() }
+    val trackpadMulti = remember { TrackpadMultiFingerState() }
 
     fun markInteraction() {
         lastInteractionAt = System.currentTimeMillis()
@@ -452,27 +503,224 @@ private fun SessionScreen(
                 }
                 true
             }
-            .pointerInput(port, inputMode, transform) {
+            .pointerInput(port, inputMode, transform, rdpW, rdpH, tapThresholdPx, trackpadMulti) {
                 awaitPointerEventScope {
+                    fun rawActionOf(ch: PointerInputChange) = when {
+                        ch.pressed && !ch.previousPressed -> PointerAction.Down
+                        !ch.pressed && ch.previousPressed -> PointerAction.Up
+                        ch.previousPressed -> PointerAction.Move
+                        else -> PointerAction.Hover
+                    }
+
+                    fun fingerId(ch: PointerInputChange) = ch.id.hashCode() and 0x7fff
+
                     while (true) {
-                        val event = awaitPointerEvent(PointerEventPass.Main)
-                        event.changes.forEach { change ->
-                            // Skip touches that land on the floating dock.
-                            val bounds = dockBoundsRef.value
-                            if (bounds != null && bounds.contains(change.position)) return@forEach
-                            if (change.isConsumed) return@forEach
-                            val rawAction = when {
-                                change.pressed && !change.previousPressed -> PointerAction.Down
-                                !change.pressed && change.previousPressed -> PointerAction.Up
-                                change.previousPressed -> PointerAction.Move
-                                else -> PointerAction.Hover
+                        val ptrEvent = awaitPointerEvent(PointerEventPass.Main)
+                        val bounds = dockBoundsRef.value
+                        val canvasChanges = ptrEvent.changes.filter { ch ->
+                            (bounds == null || !bounds.contains(ch.position)) && !ch.isConsumed
+                        }
+                        if (canvasChanges.isEmpty()) continue
+
+                        if (canvasChanges.any { rawActionOf(it) == PointerAction.Down }) {
+                            isEdgeExpandedState.value = false
+                        }
+
+                        when (inputMode) {
+                            InputMode.DirectTouch -> {
+                                val batch = mutableListOf<TouchContact>()
+                                for (ch in canvasChanges) {
+                                    when (val ra = rawActionOf(ch)) {
+                                        PointerAction.Hover -> Unit
+                                        else -> {
+                                            val (rx, ry) = toRdpClient(ch.position.x, ch.position.y)
+                                            val maxX = (rdpW - 1).coerceAtLeast(0)
+                                            val maxY = (rdpH - 1).coerceAtLeast(0)
+                                            val xi = rx.toInt().coerceIn(0, maxX)
+                                            val yi = ry.toInt().coerceIn(0, maxY)
+                                            val phase = when (ra) {
+                                                PointerAction.Down -> RemoteTouchPhase.Down
+                                                PointerAction.Up -> RemoteTouchPhase.Up
+                                                PointerAction.Move -> RemoteTouchPhase.Move
+                                                else -> RemoteTouchPhase.Cancel
+                                            }
+                                            batch += TouchContact(
+                                                fingerId = fingerId(ch),
+                                                x = xi,
+                                                y = yi,
+                                                phase = phase,
+                                            )
+                                        }
+                                    }
+                                }
+                                if (batch.isNotEmpty()) {
+                                    if (batch.any { it.phase == RemoteTouchPhase.Down }) {
+                                        haptic(HapticFeedbackConstants.VIRTUAL_KEY)
+                                    }
+                                    val ok = port.onTouchContacts(batch)
+                                    if (ok) {
+                                        markInteraction()
+                                        canvasChanges.forEach { it.consume() }
+                                        continue
+                                    }
+                                }
+                                for (ch in canvasChanges) {
+                                    val ra = rawActionOf(ch)
+                                    if (ra == PointerAction.Hover) {
+                                        ch.consume()
+                                        continue
+                                    }
+                                    if (ra == PointerAction.Down) {
+                                        haptic(HapticFeedbackConstants.VIRTUAL_KEY)
+                                    }
+                                    markInteraction()
+                                    val (rx, ry) = toRdpClient(ch.position.x, ch.position.y)
+                                    val clampedX = rx.coerceIn(0f, rdpW.toFloat())
+                                    val clampedY = ry.coerceIn(0f, rdpH.toFloat())
+                                    port.onPointerEvent(
+                                        PointerEvent(
+                                            x = clampedX,
+                                            y = clampedY,
+                                            action = ra,
+                                            buttons = if (ch.pressed) 1 else 0,
+                                            wheelDelta = 0f,
+                                            wheelDeltaH = 0f,
+                                        ),
+                                    )
+                                    ch.consume()
+                                }
                             }
 
-                            // Any touch reaching the RDP surface collapses an edge-expanded dock.
-                            if (rawAction == PointerAction.Down) isEdgeExpandedState.value = false
+                            InputMode.Trackpad -> {
+                                val pressedOnCanvas = canvasChanges.filter { it.pressed }
+                                val pressedCount = pressedOnCanvas.size
+                                val effScale = transform.scale * viewZoomState.current
 
-                            when (inputMode) {
-                                InputMode.Trackpad -> {
+                                if (trackpadMulti.prevCanvasPressed >= 2 && pressedCount < 2) {
+                                    if (pressedCount == 0) {
+                                        val origin = trackpadMulti.twoFingerOrigin
+                                        val lastC = trackpadMulti.lastCentroid
+                                        if (!trackpadMulti.pinchActive && !trackpadMulti.hadScroll &&
+                                            origin != null && lastC != null &&
+                                            System.currentTimeMillis() - trackpadMulti.twoFingerStartMs < 380 &&
+                                            hypot(
+                                                (lastC.x - origin.x).toDouble(),
+                                                (lastC.y - origin.y).toDouble(),
+                                            ) < tapThresholdPx * 2.5
+                                        ) {
+                                            markInteraction()
+                                            port.onPointerEvent(
+                                                PointerEvent(
+                                                    cursorX, cursorY, PointerAction.Down, 2, 0f, 0f,
+                                                ),
+                                            )
+                                            port.onPointerEvent(
+                                                PointerEvent(
+                                                    cursorX, cursorY, PointerAction.Up, 2, 0f, 0f,
+                                                ),
+                                            )
+                                        }
+                                    }
+                                    trackpadMulti.pinchActive = false
+                                    trackpadMulti.hadScroll = false
+                                    trackpadMulti.scrollAccX = 0f
+                                    trackpadMulti.scrollAccY = 0f
+                                    trackpadMulti.lastCentroid = null
+                                    trackpadMulti.lastSpan = 0f
+                                    trackpadMulti.twoFingerOrigin = null
+                                }
+
+                                if (pressedCount >= 2) {
+                                    val p0 = pressedOnCanvas[0]
+                                    val p1 = pressedOnCanvas[1]
+                                    val centroid = Offset(
+                                        (p0.position.x + p1.position.x) / 2f,
+                                        (p0.position.y + p1.position.y) / 2f,
+                                    )
+                                    val span = hypot(
+                                        (p1.position.x - p0.position.x).toDouble(),
+                                        (p1.position.y - p0.position.y).toDouble(),
+                                    ).toFloat().coerceAtLeast(1f)
+
+                                    if (trackpadMulti.prevCanvasPressed < 2) {
+                                        if (trackpadMulti.trackpadDragging) {
+                                            port.onPointerEvent(
+                                                PointerEvent(
+                                                    cursorX, cursorY, PointerAction.Up, 1, 0f, 0f,
+                                                ),
+                                            )
+                                            trackpadMulti.trackpadDragging = false
+                                        }
+                                        trackpadMulti.pinchActive = false
+                                        trackpadMulti.hadScroll = false
+                                        trackpadMulti.scrollAccX = 0f
+                                        trackpadMulti.scrollAccY = 0f
+                                        trackpadMulti.lastCentroid = centroid
+                                        trackpadMulti.lastSpan = span
+                                        trackpadMulti.twoFingerStartMs = System.currentTimeMillis()
+                                        trackpadMulti.twoFingerOrigin = centroid
+                                    } else {
+                                        val lc = trackpadMulti.lastCentroid ?: centroid
+                                        val dcx = centroid.x - lc.x
+                                        val dcy = centroid.y - lc.y
+                                        val spanDelta = span - trackpadMulti.lastSpan
+                                        if (!trackpadMulti.pinchActive) {
+                                            val relSpan = abs(spanDelta) / trackpadMulti.lastSpan.coerceAtLeast(1f)
+                                            if (relSpan > 0.04f) trackpadMulti.pinchActive = true
+                                        }
+                                        if (trackpadMulti.pinchActive) {
+                                            val relZ = span / trackpadMulti.lastSpan.coerceAtLeast(1f)
+                                            trackpadMulti.lastSpan = span.coerceAtLeast(1f)
+                                            val oldZ = viewZoom
+                                            val newZ = (oldZ * relZ).coerceIn(1f, 4f)
+                                            viewPan = adjustPanForPinch(centroid, oldZ, newZ, viewPan)
+                                            viewZoom = newZ
+                                            markInteraction()
+                                        } else {
+                                            trackpadMulti.scrollAccY += dcy / effScale.coerceAtLeast(0.0001f)
+                                            trackpadMulti.scrollAccX += dcx / effScale.coerceAtLeast(0.0001f)
+                                            var wy = 0
+                                            var wx = 0
+                                            while (trackpadMulti.scrollAccY <= -18f) {
+                                                wy -= 40
+                                                trackpadMulti.scrollAccY += 18f
+                                            }
+                                            while (trackpadMulti.scrollAccY >= 18f) {
+                                                wy += 40
+                                                trackpadMulti.scrollAccY -= 18f
+                                            }
+                                            while (trackpadMulti.scrollAccX <= -18f) {
+                                                wx -= 40
+                                                trackpadMulti.scrollAccX += 18f
+                                            }
+                                            while (trackpadMulti.scrollAccX >= 18f) {
+                                                wx += 40
+                                                trackpadMulti.scrollAccX -= 18f
+                                            }
+                                            if (wx != 0 || wy != 0) {
+                                                markInteraction()
+                                                port.onPointerEvent(
+                                                    PointerEvent(
+                                                        cursorX,
+                                                        cursorY,
+                                                        PointerAction.Hover,
+                                                        0,
+                                                        wheelDelta = wy.toFloat(),
+                                                        wheelDeltaH = wx.toFloat(),
+                                                    ),
+                                                )
+                                                trackpadMulti.hadScroll = true
+                                            }
+                                        }
+                                        trackpadMulti.lastCentroid = centroid
+                                    }
+                                    canvasChanges.forEach { it.consume() }
+                                    trackpadMulti.prevCanvasPressed = pressedCount
+                                    continue
+                                }
+
+                                for (change in canvasChanges) {
+                                    val rawAction = rawActionOf(change)
                                     when (rawAction) {
                                         PointerAction.Down -> {
                                             haptic(HapticFeedbackConstants.VIRTUAL_KEY)
@@ -481,14 +729,15 @@ private fun SessionScreen(
                                             lastFingerY = change.position.y
                                             fingerDownX = change.position.x
                                             fingerDownY = change.position.y
-                                            // Sync server cursor to our virtual position.
+                                            trackpadMulti.trackpadDragging = true
                                             port.onPointerEvent(
                                                 PointerEvent(
-                                                    x = cursorX,
-                                                    y = cursorY,
-                                                    action = PointerAction.Hover,
-                                                    buttons = 0,
+                                                    cursorX,
+                                                    cursorY,
+                                                    PointerAction.Hover,
+                                                    0,
                                                     wheelDelta = 0f,
+                                                    wheelDeltaH = 0f,
                                                 ),
                                             )
                                         }
@@ -498,82 +747,55 @@ private fun SessionScreen(
                                             val dy = change.position.y - lastFingerY
                                             lastFingerX = change.position.x
                                             lastFingerY = change.position.y
-                                            if (transform.scale > 0f) {
-                                                cursorX = (cursorX + dx / transform.scale)
-                                                    .coerceIn(0f, rdpW.toFloat())
-                                                cursorY = (cursorY + dy / transform.scale)
-                                                    .coerceIn(0f, rdpH.toFloat())
+                                            if (effScale > 0f) {
+                                                cursorX = (cursorX + dx / effScale).coerceIn(0f, rdpW.toFloat())
+                                                cursorY = (cursorY + dy / effScale).coerceIn(0f, rdpH.toFloat())
                                             }
                                             port.onPointerEvent(
                                                 PointerEvent(
-                                                    x = cursorX,
-                                                    y = cursorY,
-                                                    action = PointerAction.Move,
-                                                    buttons = 1,
+                                                    cursorX,
+                                                    cursorY,
+                                                    PointerAction.Move,
+                                                    1,
                                                     wheelDelta = 0f,
+                                                    wheelDeltaH = 0f,
                                                 ),
                                             )
                                         }
                                         PointerAction.Up -> {
                                             markInteraction()
+                                            trackpadMulti.trackpadDragging = false
                                             val totalDx = abs(change.position.x - fingerDownX)
                                             val totalDy = abs(change.position.y - fingerDownY)
                                             if (totalDx < tapThresholdPx && totalDy < tapThresholdPx) {
-                                                // Tap = left click at virtual cursor position.
                                                 port.onPointerEvent(
                                                     PointerEvent(
-                                                        x = cursorX,
-                                                        y = cursorY,
-                                                        action = PointerAction.Down,
-                                                        buttons = 1,
+                                                        cursorX,
+                                                        cursorY,
+                                                        PointerAction.Down,
+                                                        1,
                                                         wheelDelta = 0f,
+                                                        wheelDeltaH = 0f,
                                                     ),
                                                 )
                                                 port.onPointerEvent(
                                                     PointerEvent(
-                                                        x = cursorX,
-                                                        y = cursorY,
-                                                        action = PointerAction.Up,
-                                                        buttons = 1,
+                                                        cursorX,
+                                                        cursorY,
+                                                        PointerAction.Up,
+                                                        1,
                                                         wheelDelta = 0f,
+                                                        wheelDeltaH = 0f,
                                                     ),
                                                 )
                                             }
                                         }
-                                        PointerAction.Hover -> {
-                                            // Finger hover doesn't fire on touchscreens; ignore.
-                                        }
+                                        PointerAction.Hover -> Unit
                                     }
+                                    change.consume()
                                 }
-
-                                InputMode.DirectTouch -> {
-                                    val (rdpX, rdpY) = transform.toRdp(
-                                        change.position.x,
-                                        change.position.y,
-                                    )
-                                    val clampedX = rdpX.coerceIn(0f, rdpW.toFloat())
-                                    val clampedY = rdpY.coerceIn(0f, rdpH.toFloat())
-
-                                    if (rawAction == PointerAction.Down) {
-                                        haptic(HapticFeedbackConstants.VIRTUAL_KEY)
-                                        markInteraction()
-                                    } else if (rawAction == PointerAction.Up || rawAction == PointerAction.Move) {
-                                        markInteraction()
-                                    }
-
-                                    port.onPointerEvent(
-                                        PointerEvent(
-                                            x = clampedX,
-                                            y = clampedY,
-                                            action = rawAction,
-                                            buttons = if (change.pressed) 1 else 0,
-                                            wheelDelta = 0f,
-                                        ),
-                                    )
-                                }
+                                trackpadMulti.prevCanvasPressed = pressedCount
                             }
-
-                            change.consume()
                         }
                     }
                 }
@@ -661,10 +883,11 @@ private fun SessionScreen(
         // Cursor overlay for trackpad mode: prefer the server bitmap, fall back to
         // the locally-drawn Win11 arrow when the engine has nothing to show.
         if (inputMode == InputMode.Trackpad && surfaceW > 0) {
+            val scr = rdpToScreenClient(cursorX, cursorY)
             TrackpadCursor(
                 cursor = cursorFrame,
-                cx = cursorX * transform.scale + transform.offsetX,
-                cy = cursorY * transform.scale + transform.offsetY,
+                cx = scr.x,
+                cy = scr.y,
             )
         }
 

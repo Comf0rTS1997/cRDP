@@ -7,6 +7,7 @@ import com.crdp.core.rdp.engine.EngineChallenge
 import com.crdp.core.rdp.engine.RenderOptions
 import com.crdp.core.rdp.input.KeyEventPayload
 import com.crdp.core.rdp.input.PointerEvent
+import com.crdp.core.rdp.input.TouchContact
 import com.crdp.core.rdp.model.ConnectionProfile
 import com.crdp.core.rdp.model.SessionState
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -34,6 +35,12 @@ interface RdpSessionPort {
     suspend fun disconnect()
 
     fun onPointerEvent(event: PointerEvent)
+
+    /**
+     * Multitouch path for direct FreeRDP. Default: no-op, reports success.
+     * @return false when the transport could not send native touch (caller may fall back to mouse).
+     */
+    fun onTouchContacts(contacts: List<TouchContact>): Boolean = false
 
     fun onKeyEvent(event: KeyEventPayload)
 

@@ -1,0 +1,60 @@
+From: cRDP <crdp@local>
+Subject: [PATCH] Android JNI: freerdp_send_touch_contact for multitouch
+
+Apply from FreeRDP repository root (third_party/FreeRDP after submodule init):
+
+  git apply /path/to/cRdp3/scripts/patches/freerdp-android-touch-jni.patch
+
+Then rebuild native libs per scripts/build-freerdp.sh.
+
+---
+ client/Android/Studio/freeRDPCore/src/main/cpp/android_freerdp.c | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+diff --git a/client/Android/Studio/freeRDPCore/src/main/cpp/android_freerdp.c b/client/Android/Studio/freeRDPCore/src/main/cpp/android_freerdp.c
+--- a/client/Android/Studio/freeRDPCore/src/main/cpp/android_freerdp.c
++++ b/client/Android/Studio/freeRDPCore/src/main/cpp/android_freerdp.c
+@@ -40,6 +40,7 @@
+ #include <freerdp/channels/channels.h>
+ #include <freerdp/client/channels.h>
+ #include <freerdp/client/cmdline.h>
++#include <freerdp/client/client.h>
+ #include <freerdp/constants.h>
+ #include <freerdp/locale/keyboard.h>
+ #include <freerdp/primitives.h>
+@@ -923,6 +923,32 @@
+ 	WLog_DBG(TAG, "send_cursor_event: (%d, %d), %d", x, y, flags);
+ 	return JNI_TRUE;
+ }
+ 
++JNIEXPORT jboolean JNICALL
++Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1touch_1contact(JNIEnv* env,
++                                                                             jclass cls,
++                                                                             jlong instance,
++                                                                             jint flags,
++                                                                             jint finger,
++                                                                             jint pressure,
++                                                                             jint x,
++                                                                             jint y)
++{
++	freerdp* inst = (freerdp*)instance;
++	androidContext* afc;
++	rdpClientContext* cctx;
++
++	(void)env;
++	(void)cls;
++	if (!inst || !inst->context)
++		return JNI_FALSE;
++
++	afc = (androidContext*)inst->context;
++	cctx = &afc->common;
++
++	if (!freerdp_client_handle_touch(cctx, (UINT32)flags, (INT32)finger, (UINT32)pressure,
++	                                 (INT32)x, (INT32)y))
++		return JNI_FALSE;
++	return JNI_TRUE;
++}
++
+ JNIEXPORT jboolean JNICALL
+ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1clipboard_1data(JNIEnv* env,
+                                                                                 jclass cls,

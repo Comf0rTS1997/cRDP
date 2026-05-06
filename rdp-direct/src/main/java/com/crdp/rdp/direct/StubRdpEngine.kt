@@ -11,6 +11,7 @@ import com.crdp.core.rdp.engine.RdpEngine
 import com.crdp.core.rdp.engine.RenderOptions
 import com.crdp.core.rdp.input.KeyAction
 import com.crdp.core.rdp.input.PointerAction
+import com.crdp.core.rdp.input.TouchContact
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -51,7 +52,9 @@ class StubRdpEngine @Inject constructor() : RdpEngine {
     override fun detachSurface() = Unit
     override fun resolveChallenge(id: String, response: ChallengeResponse) = Unit
     override fun sendKey(scancode: Int, action: KeyAction, meta: Int) = Unit
-    override fun sendPointer(x: Int, y: Int, buttons: Int, action: PointerAction, wheel: Int) = Unit
+    override fun sendPointer(x: Int, y: Int, buttons: Int, action: PointerAction, wheel: Int, wheelH: Int) = Unit
+
+    override fun sendTouchContacts(contacts: List<TouchContact>): Boolean = false
 
     private companion object {
         const val MESSAGE = "RDP engine not configured (build with -Pcrdp.engine=afreerdp)"

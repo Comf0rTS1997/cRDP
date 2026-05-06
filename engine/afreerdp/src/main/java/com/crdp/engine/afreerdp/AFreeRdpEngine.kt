@@ -12,6 +12,8 @@ import com.crdp.core.rdp.engine.RdpEngine
 import com.crdp.core.rdp.engine.RenderOptions
 import com.crdp.core.rdp.input.KeyAction
 import com.crdp.core.rdp.input.PointerAction
+import com.crdp.core.rdp.input.RemoteTouchPhase
+import com.crdp.core.rdp.input.TouchContact
 import com.freerdp.freerdpcore.services.LibFreeRDP
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CompletableDeferred
@@ -195,7 +197,7 @@ class AFreeRdpEngine @Inject constructor(
         LibFreeRDP.sendKeyEvent(inst, scancode, action == KeyAction.Down)
     }
 
-    override fun sendPointer(x: Int, y: Int, buttons: Int, action: PointerAction, wheel: Int) {
+    override fun sendPointer(x: Int, y: Int, buttons: Int, action: PointerAction, wheel: Int, wheelH: Int) {
         val inst = instance
         if (inst == 0L) return
         // FreeRDP cursor flags (subset):
@@ -205,16 +207,46 @@ class AFreeRdpEngine @Inject constructor(
         //   PTR_FLAGS_BUTTON2     0x2000  (right)
         //   PTR_FLAGS_BUTTON3     0x4000  (middle)
         //   PTR_FLAGS_WHEEL       0x0200
-        var flags = 0
+        //   PTR_FLAGS_HWHEEL      0x0400
+        var base = 0
         when (action) {
-            PointerAction.Move, PointerAction.Hover -> flags = flags or 0x0800
-            PointerAction.Down -> flags = flags or 0x8000 or buttonFlag(buttons)
-            PointerAction.Up   -> flags = flags or buttonFlag(buttons)
+            PointerAction.Move, PointerAction.Hover -> base = base or 0x0800
+            PointerAction.Down -> base = base or 0x8000 or buttonFlag(buttons)
+            PointerAction.Up -> base = base or buttonFlag(buttons)
         }
         if (wheel != 0) {
-            flags = flags or 0x0200 or (wheel and 0xFF)
+            LibFreeRDP.sendCursorEvent(inst, x, y, base or 0x0200 or (wheel and 0xFF))
         }
-        LibFreeRDP.sendCursorEvent(inst, x, y, flags)
+        if (wheelH != 0) {
+            LibFreeRDP.sendCursorEvent(inst, x, y, base or 0x0400 or (wheelH and 0xFF))
+        }
+        if (wheel == 0 && wheelH == 0) {
+            LibFreeRDP.sendCursorEvent(inst, x, y, base)
+        }
+    }
+
+    override fun sendTouchContacts(contacts: List<TouchContact>): Boolean {
+        val inst = instance
+        if (inst == 0L || contacts.isEmpty()) return false
+        var ok = true
+        for (c in contacts) {
+            val flags = freerdpTouchFlags(c.phase)
+            try {
+                if (!LibFreeRDP.sendTouchContact(inst, flags, c.fingerId, c.pressure, c.x, c.y)) {
+                    ok = false
+                }
+            } catch (_: UnsatisfiedLinkError) {
+                return false
+            }
+        }
+        return ok
+    }
+
+    private fun freerdpTouchFlags(phase: RemoteTouchPhase): Int = when (phase) {
+        RemoteTouchPhase.Down -> FREERDP_TOUCH_DOWN
+        RemoteTouchPhase.Move -> FREERDP_TOUCH_MOTION
+        RemoteTouchPhase.Up -> FREERDP_TOUCH_UP
+        RemoteTouchPhase.Cancel -> FREERDP_TOUCH_CANCEL
     }
 
     private fun buttonFlag(buttons: Int): Int = when (buttons) {
@@ -503,6 +535,7 @@ class AFreeRdpEngine @Inject constructor(
             val enc = if (p.cameraEncode) "1" else "0"
             args += "/dvc:rdpecam,device:$devTok,encode:$enc,quality:2"
         }
+        args += "/multitouch"
         args += "/cert:ignore"
         args += "/sec:nla"
         // Restrict Negotiate SPNEGO to NTLM only; skips Kerberos (no KDC in direct-IP scenarios).
@@ -517,5 +550,11 @@ class AFreeRdpEngine @Inject constructor(
 
     private companion object {
         const val TAG = "AFreeRdpEngine"
+
+        // FreeRDP client/client.c — FreeRDPTouchEventType
+        const val FREERDP_TOUCH_DOWN = 0x01
+        const val FREERDP_TOUCH_UP = 0x02
+        const val FREERDP_TOUCH_MOTION = 0x04
+        const val FREERDP_TOUCH_CANCEL = 0x08
     }
 }

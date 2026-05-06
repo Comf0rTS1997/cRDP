@@ -14,6 +14,7 @@ import com.crdp.core.rdp.engine.RdpEngine
 import com.crdp.core.rdp.engine.RenderOptions
 import com.crdp.core.rdp.input.KeyEventPayload
 import com.crdp.core.rdp.input.PointerEvent
+import com.crdp.core.rdp.input.TouchContact
 import com.crdp.core.rdp.model.AudioMode
 import com.crdp.core.rdp.model.CameraMode
 import com.crdp.core.rdp.model.ConnectionProfile
@@ -131,8 +132,12 @@ class DirectRdpSession @Inject constructor(
             buttons = event.buttons,
             action = event.action,
             wheel = event.wheelDelta.toInt(),
+            wheelH = event.wheelDeltaH.toInt(),
         )
     }
+
+    override fun onTouchContacts(contacts: List<TouchContact>): Boolean =
+        engine.sendTouchContacts(contacts)
 
     override fun onKeyEvent(event: KeyEventPayload) {
         engine.sendKey(

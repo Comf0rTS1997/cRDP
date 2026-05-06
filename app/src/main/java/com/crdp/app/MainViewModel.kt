@@ -2,6 +2,7 @@ package com.crdp.app
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.crdp.app.data.ProfileRepositoryImpl
 import com.crdp.app.prefs.AppSettings
 import com.crdp.app.prefs.AutoLockVault
 import com.crdp.app.prefs.UserPreferencesRepository
@@ -124,6 +125,18 @@ class MainViewModel @Inject constructor(
 
     fun setDefaultCameraDeviceId(value: String?) {
         viewModelScope.launch { userPreferencesRepository.setDefaultCameraDeviceId(value) }
+    }
+
+    /**
+     * Persists the new preference and re-keys all stored passwords to match.
+     * Should be called while the biometric auth window is still valid (i.e. shortly after
+     * the user authenticated via VaultGate) so that keys bound to biometric can be read.
+     */
+    fun setRequireBiometricToDecrypt(value: Boolean) {
+        viewModelScope.launch {
+            userPreferencesRepository.setRequireBiometricToDecrypt(value)
+            (profileRepository as? ProfileRepositoryImpl)?.rekeyAllPasswords(value)
+        }
     }
 
     private val _vaultUnlockedAt = MutableStateFlow<Long?>(null)

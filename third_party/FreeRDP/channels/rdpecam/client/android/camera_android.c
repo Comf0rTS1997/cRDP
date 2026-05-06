@@ -228,11 +228,11 @@ static INT16 cam_android_get_media_type_descriptions(ICamHal* ihal, const char* 
 	INT16 bestIdx = -1;
 	for (size_t p = 0; p < ARRAYSIZE(preferred) && bestIdx < 0; ++p)
 	{
-		for (INT16 i = 0; i < (INT16)nSupportedFormats; ++i)
+		for (size_t i = 0; i < nSupportedFormats; ++i)
 		{
 			if (supportedFormats[i].inputFormat == preferred[p])
 			{
-				bestIdx = i;
+				bestIdx = (INT16)i;
 				break;
 			}
 		}

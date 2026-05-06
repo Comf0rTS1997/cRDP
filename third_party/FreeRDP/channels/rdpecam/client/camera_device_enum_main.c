@@ -139,6 +139,13 @@ static UINT ecam_send_device_added_notification(CameraPlugin* ecam,
  * DVC infrastructure rejects as channel names (MS-RDPECAM §2.2.2.4: the
  * ChannelName field must be a valid DVC channel name, ≤31 ASCII chars).
  * Replace every character outside [A-Za-z0-9_] with '_' and truncate.
+ *
+ * Collision note: two different device IDs could theoretically map to the
+ * same sanitised name (e.g. "external:0" and "external_0" both become
+ * "external_0"). In practice Camera2 native IDs are numeric-only strings,
+ * so this cannot occur for the built-in front/back/external IDs the HAL
+ * emits. CreateListener will fail and log an error if a collision does
+ * arise.
  */
 static void ecam_make_channel_name(const char* deviceId, char* out, size_t outLen)
 {
@@ -173,6 +180,8 @@ static UINT ecam_ihal_device_added_callback(CameraPlugin* ecam, GENERIC_CHANNEL_
 	if (!HashTable_ContainsKey(ecam->devices, deviceId))
 	{
 		CameraDevice* dev = ecam_dev_create(ecam, deviceId, deviceName, channelName);
+		if (!dev)
+			return ERROR_INTERNAL_ERROR;
 		if (!HashTable_Insert(ecam->devices, deviceId, dev))
 		{
 			ecam_dev_destroy(dev);

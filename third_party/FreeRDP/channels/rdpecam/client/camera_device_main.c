@@ -744,6 +744,7 @@ CameraDevice* ecam_dev_create(CameraPlugin* ecam, const char* deviceId, const ch
 	IWTSVirtualChannelManager* pChannelMgr = ecam->hlistener->channel_mgr;
 	WINPR_ASSERT(pChannelMgr);
 
+	WINPR_UNUSED(deviceName);
 	WLog_DBG(TAG, "entered for deviceId=%s channelName=%s", deviceId, channelName);
 
 	CameraDevice* dev = (CameraDevice*)calloc(1, sizeof(CameraDevice));

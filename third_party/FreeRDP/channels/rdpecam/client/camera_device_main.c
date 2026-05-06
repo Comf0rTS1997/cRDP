@@ -728,8 +728,15 @@ static UINT ecam_dev_on_new_channel_connection(IWTSListenerCallback* pListenerCa
  * Function description
  *
  * @return CameraDevice pointer or NULL in case of error
+ *
+ * channelName is the DVC listener name (sanitized, ≤31 ASCII chars) sent to
+ * the server in DeviceAddedNotification.  It may differ from deviceId when
+ * deviceId contains characters that are invalid in DVC channel names (e.g.
+ * colons in "external:0").  deviceId is stored as-is for HAL operations such
+ * as StartStream / StopStream.
  */
-CameraDevice* ecam_dev_create(CameraPlugin* ecam, const char* deviceId, const char* deviceName)
+CameraDevice* ecam_dev_create(CameraPlugin* ecam, const char* deviceId, const char* deviceName,
+                              const char* channelName)
 {
 	WINPR_ASSERT(ecam);
 	WINPR_ASSERT(ecam->hlistener);
@@ -737,7 +744,7 @@ CameraDevice* ecam_dev_create(CameraPlugin* ecam, const char* deviceId, const ch
 	IWTSVirtualChannelManager* pChannelMgr = ecam->hlistener->channel_mgr;
 	WINPR_ASSERT(pChannelMgr);
 
-	WLog_DBG(TAG, "entered for %s", deviceId);
+	WLog_DBG(TAG, "entered for deviceId=%s channelName=%s", deviceId, channelName);
 
 	CameraDevice* dev = (CameraDevice*)calloc(1, sizeof(CameraDevice));
 
@@ -762,12 +769,12 @@ CameraDevice* ecam_dev_create(CameraPlugin* ecam, const char* deviceId, const ch
 	dev->hlistener->iface.OnNewChannelConnection = ecam_dev_on_new_channel_connection;
 	dev->hlistener->plugin = (IWTSPlugin*)dev;
 	dev->hlistener->channel_mgr = pChannelMgr;
-	if (CHANNEL_RC_OK != pChannelMgr->CreateListener(pChannelMgr, deviceId, 0,
+	if (CHANNEL_RC_OK != pChannelMgr->CreateListener(pChannelMgr, channelName, 0,
 	                                                 &dev->hlistener->iface, &dev->listener))
 	{
 		free(dev->hlistener);
 		free(dev);
-		WLog_ERR(TAG, "CreateListener failed");
+		WLog_ERR(TAG, "CreateListener failed for channel '%s'", channelName);
 		return NULL;
 	}
 

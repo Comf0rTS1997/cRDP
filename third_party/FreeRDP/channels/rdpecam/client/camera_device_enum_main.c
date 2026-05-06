@@ -132,6 +132,30 @@ static UINT ecam_send_device_added_notification(CameraPlugin* ecam,
 	return ecam_channel_write(ecam, hchannel, msg, s, TRUE);
 }
 
+/*
+ * Produce a DVC-safe channel name from a HAL device ID.
+ *
+ * HAL IDs like "external:0" or "usb:0403:6001" contain colons that Windows'
+ * DVC infrastructure rejects as channel names (MS-RDPECAM §2.2.2.4: the
+ * ChannelName field must be a valid DVC channel name, ≤31 ASCII chars).
+ * Replace every character outside [A-Za-z0-9_] with '_' and truncate.
+ */
+static void ecam_make_channel_name(const char* deviceId, char* out, size_t outLen)
+{
+	size_t len = strlen(deviceId);
+	size_t j = 0;
+	for (size_t i = 0; i < len && j + 1 < outLen; ++i)
+	{
+		char c = deviceId[i];
+		if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+		    c == '_')
+			out[j++] = c;
+		else
+			out[j++] = '_';
+	}
+	out[j] = '\0';
+}
+
 /**
  * Function description
  *
@@ -140,11 +164,15 @@ static UINT ecam_send_device_added_notification(CameraPlugin* ecam,
 static UINT ecam_ihal_device_added_callback(CameraPlugin* ecam, GENERIC_CHANNEL_CALLBACK* hchannel,
                                             const char* deviceId, const char* deviceName)
 {
-	WLog_DBG(TAG, "deviceId=%s, deviceName=%s", deviceId, deviceName);
+	/* channelName must be a valid DVC channel name (no colons, ≤31 chars). */
+	char channelName[32];
+	ecam_make_channel_name(deviceId, channelName, sizeof(channelName));
+
+	WLog_DBG(TAG, "deviceId=%s, channelName=%s, deviceName=%s", deviceId, channelName, deviceName);
 
 	if (!HashTable_ContainsKey(ecam->devices, deviceId))
 	{
-		CameraDevice* dev = ecam_dev_create(ecam, deviceId, deviceName);
+		CameraDevice* dev = ecam_dev_create(ecam, deviceId, deviceName, channelName);
 		if (!HashTable_Insert(ecam->devices, deviceId, dev))
 		{
 			ecam_dev_destroy(dev);
@@ -156,7 +184,7 @@ static UINT ecam_ihal_device_added_callback(CameraPlugin* ecam, GENERIC_CHANNEL_
 		WLog_DBG(TAG, "Device %s already exists", deviceId);
 	}
 
-	ecam_send_device_added_notification(ecam, hchannel, deviceName, deviceId /*channelName*/);
+	ecam_send_device_added_notification(ecam, hchannel, deviceName, channelName);
 
 	return CHANNEL_RC_OK;
 }

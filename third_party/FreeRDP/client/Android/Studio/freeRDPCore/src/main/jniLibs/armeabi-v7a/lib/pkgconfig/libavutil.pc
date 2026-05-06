@@ -1,0 +1,14 @@
+prefix=/mnt/c/Develop/cRDP/third_party/FreeRDP/scripts/../client/Android/Studio/freeRDPCore/src/main/jniLibs/armeabi-v7a
+exec_prefix=${prefix}
+libdir=/mnt/c/Develop/cRDP/third_party/FreeRDP/scripts/../client/Android/Studio/freeRDPCore/src/main/jniLibs/armeabi-v7a/lib
+includedir=/mnt/c/Develop/cRDP/third_party/FreeRDP/scripts/../client/Android/Studio/freeRDPCore/src/main/jniLibs/armeabi-v7a/include
+
+Name: libavutil
+Description: FFmpeg utility library
+Version: 59.8.100
+Requires: 
+Requires.private: 
+Conflicts:
+Libs: -L${libdir}  -lavutil 
+Libs.private: -pthread -lm -latomic -landroid
+Cflags: -I${includedir}

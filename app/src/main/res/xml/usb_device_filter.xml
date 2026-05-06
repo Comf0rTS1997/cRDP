@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      USB Video Class (UVC). Class 0x0E catches every standards-compliant webcam
+      regardless of vendor. Matching by class alone keeps the filter forward-compatible
+      with cameras whose vid:pid we don't ship with.
+    -->
+    <usb-device class="14" />
+</resources>

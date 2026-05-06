@@ -1,0 +1,87 @@
+# Gradle
+.gradle/
+**/build/
+
+# Local SDK path (never commit)
+local.properties
+
+# Android Studio / IntelliJ
+/.idea/
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# Claude Code local config
+.claude/
+
+# Keystores (secrets)
+*.jks
+*.keystore
+
+# Built Android artifacts (binaries)
+*.apk
+*.aab
+*.ap_
+*.aar
+*.dex
+*.dm
+
+# Native / NDK build outputs
+.externalNativeBuild/
+.cxx/
+obj/
+
+# Profiling / captures
+captures/
+*.hprof
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Logs & tmp
+*.log
+*.tmp
+*.temp
+
+# Kotlin compiler caches (sometimes generated at repo root)
+.kotlin/
+
+# Local build scratch (FreeRDP cross-build outputs, JNI .so, logs, backups)
+/.build/
+
+# CLion / out-of-source CMake builds
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+compile_commands.json
+
+# Android Studio profile/output dirs
+out/
+release/
+
+# ProGuard / R8 mapping artifacts
+mapping.txt
+seeds.txt
+usage.txt
+
+# Native object/lib artifacts that escape build/
+*.o
+*.obj
+*.so
+*.a
+*.lib
+*.dll
+*.exe
+*.pdb
+
+# Editor swap / backup
+*.swp
+*.swo
+*~
+*.bak
+*.orig
+*.rej

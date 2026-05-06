@@ -1,0 +1,32 @@
+# Default: let git auto-detect text vs binary, normalize to LF in repo
+* text=auto eol=lf
+
+# POSIX shell wrapper and shell scripts must stay LF (CRLF breaks the shebang)
+gradlew text eol=lf
+*.sh text eol=lf
+
+# Windows scripts must stay CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets — never normalize
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.jar binary
+*.aar binary
+*.apk binary
+*.aab binary
+*.so binary
+*.a binary
+*.o binary
+*.dll binary
+*.exe binary
+*.keystore binary
+*.jks binary

@@ -1,0 +1,14 @@
+prefix=/mnt/c/Develop/cRDP/third_party/FreeRDP/scripts/../client/Android/Studio/freeRDPCore/src/main/jniLibs/armeabi-v7a
+exec_prefix=${prefix}
+libdir=/mnt/c/Develop/cRDP/third_party/FreeRDP/scripts/../client/Android/Studio/freeRDPCore/src/main/jniLibs/armeabi-v7a/lib
+includedir=/mnt/c/Develop/cRDP/third_party/FreeRDP/scripts/../client/Android/Studio/freeRDPCore/src/main/jniLibs/armeabi-v7a/include
+
+Name: libavcodec
+Description: FFmpeg codec library
+Version: 61.3.100
+Requires: 
+Requires.private: libswresample >= 5.1.100, libavutil >= 59.8.100
+Conflicts:
+Libs: -L${libdir}  -lavcodec 
+Libs.private: -pthread -lm -latomic -landroid -lz
+Cflags: -I${includedir}

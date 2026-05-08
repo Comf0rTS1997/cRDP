@@ -77,3 +77,7 @@ hides which RDP library actually moves bytes. To swap implementations:
 | Mock for tests | Provide a `FakeRdpEngine` in a test source set; override `@DirectEngine` via Hilt's `@TestInstallIn`. |
 
 See `THIRD_PARTY.md` for license info.
+
+## Vibe Code
+
+This  project is heavily vibe coded. Tools used including Claude and Cursor.

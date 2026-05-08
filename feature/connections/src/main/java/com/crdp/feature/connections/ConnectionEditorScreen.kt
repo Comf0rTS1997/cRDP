@@ -42,6 +42,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -58,6 +59,7 @@ fun ConnectionEditorRoute(
     onBack: () -> Unit,
     onSaved: (String) -> Unit,
     onSaveAndConnect: (String) -> Unit,
+    requireBiometricToDecrypt: Boolean,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -111,10 +113,10 @@ fun ConnectionEditorRoute(
                     ) { Text("Test") }
                     Spacer(modifier = Modifier.weight(1f))
                     FilledTonalButton(
-                        onClick = { viewModel.save(onSaved) },
+                        onClick = { viewModel.save(requireBiometricToDecrypt, onSaved) },
                         modifier = Modifier.padding(end = 8.dp),
                     ) { Text("Save") }
-                    Button(onClick = { viewModel.save(onSaveAndConnect) }) {
+                    Button(onClick = { viewModel.save(requireBiometricToDecrypt, onSaveAndConnect) }) {
                         Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(18.dp))
                         Text("Save & connect", modifier = Modifier.padding(start = 4.dp))
                     }
@@ -356,6 +358,36 @@ fun ConnectionEditorRoute(
                 FilterChip(
                     selected = state.microphoneOverride == false,
                     onClick = { viewModel.updateMicrophoneOverride(false) },
+                    label = { Text("Off") },
+                )
+            }
+            Text(
+                stringResource(R.string.connections_clipboard_section),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                stringResource(R.string.connections_clipboard_caption),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilterChip(
+                    selected = state.clipboardSyncOverride == null,
+                    onClick = { viewModel.updateClipboardSyncOverride(null) },
+                    label = { Text("App default") },
+                )
+                FilterChip(
+                    selected = state.clipboardSyncOverride == true,
+                    onClick = { viewModel.updateClipboardSyncOverride(true) },
+                    label = { Text("On") },
+                )
+                FilterChip(
+                    selected = state.clipboardSyncOverride == false,
+                    onClick = { viewModel.updateClipboardSyncOverride(false) },
                     label = { Text("Off") },
                 )
             }

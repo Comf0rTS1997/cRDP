@@ -1,6 +1,10 @@
 package com.crdp.engine.afreerdp
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.view.Surface
 import com.crdp.core.rdp.engine.ChallengeResponse
 import com.crdp.core.rdp.engine.CursorFrame
@@ -30,8 +34,10 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import kotlin.coroutines.resume
 
@@ -76,6 +82,33 @@ class AFreeRdpEngine @Inject constructor(
     // whether the session ever succeeded — track it explicitly.
     @Volatile private var hasBeenConnected: Boolean = false
 
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    @Volatile private var clipboardSyncEnabledForSession: Boolean = false
+    @Volatile private var clipboardBridgeActive: Boolean = false
+    @Volatile private var ignoreNextLocalClip: Boolean = false
+    @Volatile private var lastTextSentToRemote: String? = null
+
+    private var clipListener: ClipboardManager.OnPrimaryClipChangedListener? = null
+
+    private val clipDebounceRunnable = Runnable {
+        if (!clipboardBridgeActive) return@Runnable
+        val text = readPrimaryPlainText() ?: return@Runnable
+        if (ignoreNextLocalClip) {
+            ignoreNextLocalClip = false
+            return@Runnable
+        }
+        if (text == lastTextSentToRemote) return@Runnable
+        val exec = worker ?: return@Runnable
+        val inst = instance
+        if (inst == 0L) return@Runnable
+        exec.execute {
+            if (!clipboardBridgeActive || instance != inst) return@execute
+            lastTextSentToRemote = text
+            LibFreeRDP.sendClipboardData(inst, text)
+        }
+    }
+
     init {
         LibFreeRDP.loadNativeLibraries()
     }
@@ -84,6 +117,10 @@ class AFreeRdpEngine @Inject constructor(
         if (instance != 0L) {
             return@withContext Result.failure(IllegalStateException("Engine already connected"))
         }
+        clipboardSyncEnabledForSession = params.clipboardSyncEnabled
+        clipboardBridgeActive = false
+        ignoreNextLocalClip = false
+        lastTextSentToRemote = null
         userInitiatedDisconnect = false
         hasBeenConnected = false
         _cursor.value = null
@@ -154,6 +191,7 @@ class AFreeRdpEngine @Inject constructor(
     }
 
     private suspend fun tearDownInstance() {
+        stopClipboardBridgeSync()
         val inst = instance
         val signal = sessionEndedSignal
         if (inst != 0L) {
@@ -266,12 +304,24 @@ class AFreeRdpEngine @Inject constructor(
 
         override fun onConnectionSuccess() {
             hasBeenConnected = true
+            if (clipboardSyncEnabledForSession) {
+                clipboardBridgeActive = true
+            }
             _state.value = EngineState.Connected(
                 detail = "FreeRDP ${LibFreeRDP.version()}",
                 bytesSent = bytesSent,
                 bytesReceived = bytesReceived,
             )
             connectFuture?.takeUnless { it.isCompleted }?.complete(Result.success(Unit))
+            if (clipboardSyncEnabledForSession) {
+                mainHandler.post {
+                    if (instance == 0L) {
+                        clipboardBridgeActive = false
+                        return@post
+                    }
+                    innerStartClipboardBridge()
+                }
+            }
         }
 
         override fun onConnectionFailure() {
@@ -380,6 +430,7 @@ class AFreeRdpEngine @Inject constructor(
                 subject = subject,
                 issuer = issuer,
                 fingerprint = fingerprint,
+                flags = flags,
             ),
         ).let { resp ->
             when (resp) {
@@ -412,6 +463,7 @@ class AFreeRdpEngine @Inject constructor(
                 oldSubject = oldSubject,
                 oldIssuer = oldIssuer,
                 oldFingerprint = oldFingerprint,
+                flags = flags,
             ),
         ).let { resp ->
             when (resp) {
@@ -445,7 +497,21 @@ class AFreeRdpEngine @Inject constructor(
         }
 
         override fun onRemoteClipboardChanged(data: String) {
-            // Clipboard plumbing deferred to v1.1.
+            if (!clipboardSyncEnabledForSession || !clipboardBridgeActive) return
+            if (data.isEmpty()) return
+            val inst = instance
+            if (inst == 0L) return
+            mainHandler.post {
+                if (!clipboardBridgeActive || instance != inst) return@post
+                if (readPrimaryPlainText() == data) return@post
+                try {
+                    ignoreNextLocalClip = true
+                    val cm = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    cm.setPrimaryClip(ClipData.newPlainText("cRDP", data))
+                } catch (_: Throwable) {
+                    ignoreNextLocalClip = false
+                }
+            }
         }
 
         override fun requestSurfaceBitmap(): android.graphics.Bitmap =
@@ -471,6 +537,58 @@ class AFreeRdpEngine @Inject constructor(
 
     private fun blitterFallbackWidth() = 1280
     private fun blitterFallbackHeight() = 720
+
+    private fun readPrimaryPlainText(): String? = try {
+        val cm = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clip = cm.primaryClip ?: return null
+        if (clip.itemCount <= 0) return null
+        val t = clip.getItemAt(0).coerceToText(appContext)?.toString() ?: return null
+        if (t.isEmpty()) return null
+        t
+    } catch (_: Throwable) {
+        null
+    }
+
+    private fun innerStartClipboardBridge() {
+        if (clipListener != null) return
+        val cm = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val listener = ClipboardManager.OnPrimaryClipChangedListener {
+            if (!clipboardBridgeActive) return@OnPrimaryClipChangedListener
+            mainHandler.removeCallbacks(clipDebounceRunnable)
+            mainHandler.postDelayed(clipDebounceRunnable, CLIP_DEBOUNCE_MS)
+        }
+        clipListener = listener
+        cm.addPrimaryClipChangedListener(listener)
+    }
+
+    private fun innerStopClipboardBridge() {
+        mainHandler.removeCallbacks(clipDebounceRunnable)
+        val listener = clipListener ?: return
+        clipListener = null
+        try {
+            val cm = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cm.removePrimaryClipChangedListener(listener)
+        } catch (_: Throwable) {
+        }
+    }
+
+    private fun stopClipboardBridgeSync() {
+        clipboardBridgeActive = false
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            innerStopClipboardBridge()
+            return
+        }
+        val latch = CountDownLatch(1)
+        mainHandler.post {
+            innerStopClipboardBridge()
+            latch.countDown()
+        }
+        try {
+            latch.await(2, TimeUnit.SECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+    }
 
     private fun blockOnChallenge(challenge: EngineChallenge): ChallengeResponse {
         val deferred = CompletableDeferred<ChallengeResponse>()
@@ -536,7 +654,6 @@ class AFreeRdpEngine @Inject constructor(
             args += "/dvc:rdpecam,device:$devTok,encode:$enc,quality:2"
         }
         args += "/multitouch"
-        args += "/cert:ignore"
         args += "/sec:nla"
         // Restrict Negotiate SPNEGO to NTLM only; skips Kerberos (no KDC in direct-IP scenarios).
         args += "/auth-pkg-list:ntlm"
@@ -550,6 +667,7 @@ class AFreeRdpEngine @Inject constructor(
 
     private companion object {
         const val TAG = "AFreeRdpEngine"
+        const val CLIP_DEBOUNCE_MS = 150L
 
         // FreeRDP client/client.c — FreeRDPTouchEventType
         const val FREERDP_TOUCH_DOWN = 0x01

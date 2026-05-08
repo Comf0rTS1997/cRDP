@@ -11,6 +11,8 @@ sealed class EngineChallenge {
         val subject: String,
         val issuer: String,
         val fingerprint: String,
+        /** Bitmask from FreeRDP `VERIFY_CERT_FLAG_*` (see [VerifyCertificateFlags]). */
+        val flags: Long,
     ) : EngineChallenge()
 
     data class CertificateChanged(
@@ -24,6 +26,7 @@ sealed class EngineChallenge {
         val oldSubject: String,
         val oldIssuer: String,
         val oldFingerprint: String,
+        val flags: Long,
     ) : EngineChallenge()
 
     data class Auth(

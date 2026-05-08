@@ -5,7 +5,13 @@ import android.util.Log
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.KeyEvent as AndroidKeyEvent
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Box
@@ -32,7 +38,9 @@ import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Monitor
 import androidx.compose.material.icons.filled.Mouse
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -57,6 +65,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.KeyEvent
@@ -88,6 +97,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.crdp.core.rdp.engine.CertificateVerifyMessages
 import com.crdp.core.rdp.input.KeyAction
 import com.crdp.core.rdp.input.KeyEventPayload
 import com.crdp.core.rdp.input.PointerAction
@@ -114,6 +124,9 @@ import androidx.compose.ui.geometry.Rect
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.roundToInt
+import java.io.ByteArrayInputStream
+import java.security.cert.CertificateFactory
+import java.security.cert.X509Certificate
 
 private val DockBackground = Color(0xAA000000)
 private val DisconnectRed = Color(0xFFBA1A1A)
@@ -164,6 +177,8 @@ data class SessionUserSettings(
     val defaultCameraDeviceId: String? = null,
     /** Encode camera frames to H.264 client-side (recommended). */
     val cameraEncode: Boolean = true,
+    /** App-wide default for clipboard sync when a connection uses “app default”. */
+    val defaultClipboardSync: Boolean = true,
 )
 
 @Composable
@@ -229,6 +244,10 @@ fun SessionRoute(
                 encode = settings.cameraEncode,
             ),
         )
+    }
+
+    LaunchedEffect(settings.defaultClipboardSync) {
+        viewModel.setClipboardDefaultsHint(settings.defaultClipboardSync)
     }
 
     // Mic is a runtime-prompt permission. Only request when the resolved decision
@@ -1200,23 +1219,49 @@ internal fun ChallengeDialog(
         is com.crdp.core.rdp.engine.EngineChallenge.Certificate -> CertificateDialog(
             host = challenge.host,
             port = challenge.port,
+            commonName = challenge.commonName,
+            flags = challenge.flags,
             subject = challenge.subject,
             issuer = challenge.issuer,
             fingerprint = challenge.fingerprint,
             changed = false,
-            onAcceptOnce = { onResolve(challenge.id, com.crdp.core.rdp.engine.ChallengeResponse.AcceptOnce) },
-            onAcceptAlways = { onResolve(challenge.id, com.crdp.core.rdp.engine.ChallengeResponse.AcceptAlways) },
+            oldSubject = "",
+            oldIssuer = "",
+            oldFingerprint = "",
+            onYes = { dontAskAgain ->
+                onResolve(
+                    challenge.id,
+                    if (dontAskAgain) {
+                        com.crdp.core.rdp.engine.ChallengeResponse.AcceptAlways
+                    } else {
+                        com.crdp.core.rdp.engine.ChallengeResponse.AcceptOnce
+                    },
+                )
+            },
             onReject = { onResolve(challenge.id, com.crdp.core.rdp.engine.ChallengeResponse.Reject) },
         )
         is com.crdp.core.rdp.engine.EngineChallenge.CertificateChanged -> CertificateDialog(
             host = challenge.host,
             port = challenge.port,
+            commonName = challenge.commonName,
+            flags = challenge.flags,
             subject = challenge.subject,
             issuer = challenge.issuer,
             fingerprint = challenge.fingerprint,
             changed = true,
-            onAcceptOnce = { onResolve(challenge.id, com.crdp.core.rdp.engine.ChallengeResponse.AcceptOnce) },
-            onAcceptAlways = { onResolve(challenge.id, com.crdp.core.rdp.engine.ChallengeResponse.AcceptAlways) },
+            oldSubject = challenge.oldSubject,
+            oldIssuer = challenge.oldIssuer,
+            oldFingerprint = challenge.oldFingerprint,
+            onYes = { dontAskAgain ->
+                onResolve(
+                    challenge.id,
+                    if (dontAskAgain) {
+                        com.crdp.core.rdp.engine.ChallengeResponse.AcceptAlways
+                    } else {
+                        com.crdp.core.rdp.engine.ChallengeResponse.AcceptOnce
+                    },
+                )
+            },
             onReject = { onResolve(challenge.id, com.crdp.core.rdp.engine.ChallengeResponse.Reject) },
         )
         is com.crdp.core.rdp.engine.EngineChallenge.Auth -> AuthDialog(
@@ -1238,46 +1283,250 @@ internal fun ChallengeDialog(
 private fun CertificateDialog(
     host: String,
     port: Int,
+    commonName: String,
+    flags: Long,
     subject: String,
     issuer: String,
     fingerprint: String,
     changed: Boolean,
-    onAcceptOnce: () -> Unit,
-    onAcceptAlways: () -> Unit,
+    oldSubject: String,
+    oldIssuer: String,
+    oldFingerprint: String,
+    onYes: (dontAskAgain: Boolean) -> Unit,
     onReject: () -> Unit,
 ) {
-    androidx.compose.material3.AlertDialog(
-        onDismissRequest = onReject,
-        title = {
-            Text(if (changed) "Certificate changed" else "Verify certificate")
-        },
-        text = {
-            Column {
-                Text("$host:$port", fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(8.dp))
-                Text("Subject: $subject", fontSize = 12.sp)
-                Text("Issuer: $issuer", fontSize = 12.sp)
-                Text("Fingerprint: $fingerprint", fontSize = 11.sp)
-                if (changed) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "The server's certificate has changed since last visit.",
-                        color = DisconnectRed,
-                        fontSize = 12.sp,
+    var showDetails by remember { mutableStateOf(false) }
+    var dontAskAgain by remember { mutableStateOf(false) }
+    val errorLines = remember(flags) { CertificateVerifyMessages.certificateErrorMessages(flags) }
+    val validitySummary = remember(fingerprint, flags) { certificateValiditySummary(fingerprint, flags) }
+
+    if (showDetails) {
+        CertificateDetailsSheet(
+            commonName = commonName,
+            subject = subject,
+            issuer = issuer,
+            fingerprint = fingerprint,
+            validitySummary = validitySummary,
+            changed = changed,
+            oldSubject = oldSubject,
+            oldIssuer = oldIssuer,
+            oldFingerprint = oldFingerprint,
+            onDismiss = { showDetails = false },
+        )
+    }
+
+    Dialog(onDismissRequest = onReject) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 3.dp,
+            modifier = Modifier.widthIn(max = 520.dp),
+        ) {
+            val scroll = rememberScrollState()
+            Column(
+                Modifier
+                    .padding(20.dp)
+                    .verticalScroll(scroll),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFFFFF59D))
+                        .padding(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = Color(0xFF5D4037),
                     )
+                    Text(
+                        "The identity of the remote computer cannot be verified. Do you want to connect anyway?",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        color = Color(0xFF3E2723),
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "The remote computer could not be authenticated due to problems with its security certificate. " +
+                        "It may be unsafe to proceed.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "Certificate name",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Name in the certificate from the remote computer:",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    commonName.ifBlank { subject.ifBlank { host } },
+                    fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+                Text(
+                    "$host:$port",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "Certificate errors",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "The following errors were encountered while validating the remote computer's certificate:",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                errorLines.forEach { line ->
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.Top,
+                    ) {
+                        Icon(
+                            Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = DisconnectRed,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Text(line, style = MaterialTheme.typography.bodySmall, color = DisconnectRed)
+                    }
+                    Spacer(Modifier.height(6.dp))
+                }
+                if (changed) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "The server's certificate has changed since the last connection to this computer.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = DisconnectRed,
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "Do you want to connect despite these certificate errors?",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Checkbox(
+                        checked = dontAskAgain,
+                        onCheckedChange = { dontAskAgain = it },
+                    )
+                    Text(
+                        "Don't ask me again for connections to this computer",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier
+                            .padding(start = 4.dp)
+                            .clickable { dontAskAgain = !dontAskAgain },
+                    )
+                }
+                Spacer(Modifier.height(16.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    androidx.compose.material3.TextButton(onClick = { showDetails = true }) {
+                        Text("View certificate…")
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        androidx.compose.material3.TextButton(onClick = onReject) {
+                            Text("No")
+                        }
+                        Button(onClick = { onYes(dontAskAgain) }) {
+                            Text("Yes")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CertificateDetailsSheet(
+    commonName: String,
+    subject: String,
+    issuer: String,
+    fingerprint: String,
+    validitySummary: String?,
+    changed: Boolean,
+    oldSubject: String,
+    oldIssuer: String,
+    oldFingerprint: String,
+    onDismiss: () -> Unit,
+) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Certificate details") },
+        text = {
+            val scroll = rememberScrollState()
+            Column(Modifier.verticalScroll(scroll)) {
+                Text("Name", style = MaterialTheme.typography.labelMedium)
+                Text(commonName.ifBlank { "—" }, style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(8.dp))
+                Text("Subject", style = MaterialTheme.typography.labelMedium)
+                Text(subject, style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(8.dp))
+                Text("Issuer", style = MaterialTheme.typography.labelMedium)
+                Text(issuer, style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(8.dp))
+                Text("Thumbprint / fingerprint", style = MaterialTheme.typography.labelMedium)
+                Text(fingerprint, style = MaterialTheme.typography.bodySmall, fontSize = 11.sp)
+                if (validitySummary != null) {
+                    Spacer(Modifier.height(8.dp))
+                    Text("Validity", style = MaterialTheme.typography.labelMedium)
+                    Text(validitySummary, style = MaterialTheme.typography.bodySmall)
+                }
+                if (changed && (oldSubject.isNotBlank() || oldIssuer.isNotBlank() || oldFingerprint.isNotBlank())) {
+                    Spacer(Modifier.height(12.dp))
+                    HorizontalDivider()
+                    Spacer(Modifier.height(8.dp))
+                    Text("Previously trusted certificate", style = MaterialTheme.typography.titleSmall)
+                    Spacer(Modifier.height(6.dp))
+                    Text("Subject", style = MaterialTheme.typography.labelMedium)
+                    Text(oldSubject.ifBlank { "—" }, style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(6.dp))
+                    Text("Issuer", style = MaterialTheme.typography.labelMedium)
+                    Text(oldIssuer.ifBlank { "—" }, style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(6.dp))
+                    Text("Thumbprint / fingerprint", style = MaterialTheme.typography.labelMedium)
+                    Text(oldFingerprint.ifBlank { "—" }, style = MaterialTheme.typography.bodySmall, fontSize = 11.sp)
                 }
             }
         },
         confirmButton = {
-            Row {
-                androidx.compose.material3.TextButton(onClick = onAcceptAlways) { Text("Always") }
-                androidx.compose.material3.TextButton(onClick = onAcceptOnce) { Text("Once") }
-            }
-        },
-        dismissButton = {
-            androidx.compose.material3.TextButton(onClick = onReject) { Text("Reject") }
+            androidx.compose.material3.TextButton(onClick = onDismiss) { Text("Close") }
         },
     )
+}
+
+private fun certificateValiditySummary(fingerprint: String, flags: Long): String? {
+    if (!CertificateVerifyMessages.isPemFingerprint(flags)) return null
+    val pem = fingerprint.trim()
+    if (!pem.contains("-----BEGIN CERTIFICATE-----")) return null
+    return try {
+        val cf = CertificateFactory.getInstance("X.509")
+        val cert = cf.generateCertificate(ByteArrayInputStream(pem.toByteArray(Charsets.UTF_8))) as X509Certificate
+        "Valid from ${cert.notBefore} through ${cert.notAfter}"
+    } catch (_: Exception) {
+        null
+    }
 }
 
 @Composable

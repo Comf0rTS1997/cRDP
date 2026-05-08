@@ -103,6 +103,7 @@ class DirectRdpSession @Inject constructor(
                     CameraMode.Specific -> CameraRedirect.Specific
                 },
                 cameraDeviceId = profile.cameraDeviceId,
+                clipboardSyncEnabled = profile.clipboardSyncOverride ?: true,
             ),
         )
     }

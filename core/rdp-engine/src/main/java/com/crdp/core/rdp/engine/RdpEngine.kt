@@ -3,6 +3,7 @@ package com.crdp.core.rdp.engine
 import android.view.Surface
 import com.crdp.core.rdp.input.KeyAction
 import com.crdp.core.rdp.input.PointerAction
+import com.crdp.core.rdp.input.TouchContact
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -30,5 +31,11 @@ interface RdpEngine {
     fun resolveChallenge(id: String, response: ChallengeResponse)
 
     fun sendKey(scancode: Int, action: KeyAction, meta: Int)
-    fun sendPointer(x: Int, y: Int, buttons: Int, action: PointerAction, wheel: Int)
+    fun sendPointer(x: Int, y: Int, buttons: Int, action: PointerAction, wheel: Int, wheelH: Int = 0)
+
+    /**
+     * Sends multitouch contacts to the server (Windows RDPEI when available).
+     * @return false if native touch is unavailable or submission failed for any contact
+     */
+    fun sendTouchContacts(contacts: List<TouchContact>): Boolean
 }

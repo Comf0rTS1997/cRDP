@@ -264,6 +264,7 @@ class MainActivity : FragmentActivity() {
                                 onBack = { navController.popBackStack() },
                                 onSaved = { navController.popBackStack() },
                                 onSaveAndConnect = ::saveAndConnectWithBiometric,
+                                requireBiometricToDecrypt = appSettings.requireBiometricToDecrypt,
                             )
                         }
                         composable(

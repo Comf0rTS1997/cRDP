@@ -2,7 +2,6 @@ package com.crdp.app
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.crdp.app.data.ProfileRepositoryImpl
 import com.crdp.app.prefs.AppSettings
 import com.crdp.app.prefs.AutoLockVault
 import com.crdp.app.prefs.UserPreferencesRepository
@@ -135,7 +134,7 @@ class MainViewModel @Inject constructor(
     fun setRequireBiometricToDecrypt(value: Boolean) {
         viewModelScope.launch {
             userPreferencesRepository.setRequireBiometricToDecrypt(value)
-            (profileRepository as? ProfileRepositoryImpl)?.rekeyAllPasswords(value)
+            profileRepository.rekeyAllPasswords(value)
         }
     }
 

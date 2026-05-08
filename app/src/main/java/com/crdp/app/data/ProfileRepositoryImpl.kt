@@ -142,17 +142,7 @@ class ProfileRepositoryImpl @Inject constructor(
      * [requireUserAuth] controls whether that key requires a recent biometric unlock;
      * pass the current value of [com.crdp.app.prefs.AppSettings.requireBiometricToDecrypt].
      */
-    override suspend fun upsert(profile: ConnectionProfile) {
-        ensureInitialized()
-        mutex.withLock {
-            val stored = encryptPassword(profile, requireUserAuth = false)
-            val updated = cache.value.toMutableMap().apply { put(profile.id, stored) }
-            persistCache(updated)
-        }
-    }
-
-    /** Saves a profile, optionally binding the password key to biometric authentication. */
-    suspend fun upsert(profile: ConnectionProfile, requireUserAuth: Boolean) {
+    override suspend fun upsert(profile: ConnectionProfile, requireUserAuth: Boolean) {
         ensureInitialized()
         mutex.withLock {
             val stored = encryptPassword(profile, requireUserAuth)
@@ -176,14 +166,14 @@ class ProfileRepositoryImpl @Inject constructor(
      * existing keys with [requireUserAuth=true] can be decrypted before re-wrapping).
      * Returns false if any password could not be re-keyed (auth window expired).
      */
-    suspend fun rekeyAllPasswords(newRequireUserAuth: Boolean): Boolean {
+    override suspend fun rekeyAllPasswords(requireUserAuth: Boolean): Boolean {
         ensureInitialized()
         var allOk = true
         mutex.withLock {
             val updated = cache.value.toMutableMap()
             for ((id, profile) in updated) {
                 if (profile !is DirectConnectionProfile || profile.password.isEmpty()) continue
-                val newCt = passwordCrypto.rekey(id, profile.password, newRequireUserAuth)
+                val newCt = passwordCrypto.rekey(id, profile.password, requireUserAuth)
                 if (newCt != null) {
                     updated[id] = profile.copy(password = newCt)
                 } else {

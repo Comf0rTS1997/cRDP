@@ -506,15 +506,16 @@ class AFreeRdpEngine @Inject constructor(
     private fun blitterFallbackWidth() = 1280
     private fun blitterFallbackHeight() = 720
 
-    private fun readPrimaryPlainText(): String? = try {
-        val cm = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        val clip = cm.primaryClip ?: return null
-        if (clip.itemCount <= 0) return null
-        val t = clip.getItemAt(0).coerceToText(appContext)?.toString() ?: return null
-        if (t.isEmpty()) return null
-        t
-    } catch (_: Throwable) {
-        null
+    private fun readPrimaryPlainText(): String? {
+        return try {
+            val cm = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val clip = cm.primaryClip ?: return null
+            if (clip.itemCount <= 0) return null
+            val t = clip.getItemAt(0).coerceToText(appContext)?.toString() ?: return null
+            t.ifEmpty { null }
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     private fun innerStartClipboardBridge() {

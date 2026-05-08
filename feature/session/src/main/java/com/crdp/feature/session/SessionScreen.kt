@@ -433,6 +433,7 @@ private fun SessionScreen(
         }
         view.post(request)
         onDispose {
+            view.removeCallbacks(request)
             runCatching {
                 if (view.hasPointerCapture()) view.releasePointerCapture()
             }

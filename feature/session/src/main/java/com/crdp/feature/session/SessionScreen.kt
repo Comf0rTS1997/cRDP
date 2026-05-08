@@ -145,6 +145,8 @@ data class SessionUserSettings(
     val defaultCameraDeviceId: String? = null,
     /** Encode camera frames to H.264 client-side (recommended). */
     val cameraEncode: Boolean = true,
+    /** App-wide default for clipboard sync when a connection uses “app default”. */
+    val defaultClipboardSync: Boolean = true,
 )
 
 @Composable
@@ -210,6 +212,10 @@ fun SessionRoute(
                 encode = settings.cameraEncode,
             ),
         )
+    }
+
+    LaunchedEffect(settings.defaultClipboardSync) {
+        viewModel.setClipboardDefaultsHint(settings.defaultClipboardSync)
     }
 
     // Mic is a runtime-prompt permission. Only request when the resolved decision

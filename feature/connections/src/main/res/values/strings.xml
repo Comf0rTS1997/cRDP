@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="connections_clipboard_section">Clipboard sync</string>
+    <string name="connections_clipboard_caption">Plain text with the remote session (direct RDP only)</string>
+    <string name="connections_clipboard_details">Clipboard sync</string>
+</resources>

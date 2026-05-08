@@ -57,9 +57,11 @@ private suspend fun verifyBiometricForProfile(
     mainViewModel: MainViewModel,
     context: android.content.Context,
     profileId: String,
+    requireBiometricToDecrypt: Boolean,
 ): Boolean {
     val profile = mainViewModel.getProfile(profileId) ?: return true
-    if (!mainViewModel.requireBiometric(profile)) return true
+    val needsBiometric = mainViewModel.requireBiometric(profile) || requireBiometricToDecrypt
+    if (!needsBiometric) return true
     val activity = context as? FragmentActivity ?: return false
     val result = BiometricPrompter.prompt(
         activity = activity,
@@ -87,7 +89,11 @@ class MainActivity : FragmentActivity() {
 
                 fun connectWithBiometric(profileId: String) {
                     coroutineScope.launch {
-                        if (verifyBiometricForProfile(mainViewModel, context, profileId)) {
+                        if (verifyBiometricForProfile(
+                                mainViewModel, context, profileId,
+                                appSettings.requireBiometricToDecrypt,
+                            )
+                        ) {
                             navController.navigate("session/${Uri.encode(profileId)}")
                         }
                     }
@@ -95,7 +101,11 @@ class MainActivity : FragmentActivity() {
 
                 fun saveAndConnectWithBiometric(profileId: String) {
                     coroutineScope.launch {
-                        if (verifyBiometricForProfile(mainViewModel, context, profileId)) {
+                        if (verifyBiometricForProfile(
+                                mainViewModel, context, profileId,
+                                appSettings.requireBiometricToDecrypt,
+                            )
+                        ) {
                             navController.navigate("session/${Uri.encode(profileId)}") {
                                 popUpTo("connections")
                             }
@@ -181,6 +191,7 @@ class MainActivity : FragmentActivity() {
                                 onTouchAsMouse = mainViewModel::setTouchAsMouse,
                                 onHapticFeedback = mainViewModel::setHapticFeedback,
                                 onBiometricUnlock = mainViewModel::setBiometricUnlock,
+                                onRequireBiometricToDecrypt = mainViewModel::setRequireBiometricToDecrypt,
                                 onAutoDisconnectIdle = mainViewModel::setAutoDisconnectIdle,
                                 onBandwidthProfile = mainViewModel::setBandwidthProfile,
                                 onDefaultResolution = mainViewModel::setDefaultResolution,
@@ -254,6 +265,7 @@ class MainActivity : FragmentActivity() {
                                 onBack = { navController.popBackStack() },
                                 onSaved = { navController.popBackStack() },
                                 onSaveAndConnect = ::saveAndConnectWithBiometric,
+                                requireBiometricToDecrypt = appSettings.requireBiometricToDecrypt,
                             )
                         }
                         composable(

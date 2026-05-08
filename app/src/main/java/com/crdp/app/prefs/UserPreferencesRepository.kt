@@ -42,6 +42,11 @@ data class AppSettings(
     val cameraEncode: Boolean = true,
     /** Default plain-text clipboard sync for connections that do not override (direct RDP). */
     val defaultClipboardSync: Boolean = true,
+    /**
+     * When true, AndroidKeystore password keys require recent biometric authentication (30-second
+     * window) in addition to the UI-level VaultGate. Defaults to true for defence-in-depth.
+     */
+    val requireBiometricToDecrypt: Boolean = true,
 )
 
 object AudioModes {
@@ -164,6 +169,7 @@ class UserPreferencesRepository @Inject constructor(
     private val defaultCameraDeviceIdKey = stringPreferencesKey("default_camera_device_id")
     private val cameraEncodeKey = booleanPreferencesKey("camera_encode_h264")
     private val defaultClipboardSyncKey = booleanPreferencesKey("default_clipboard_sync")
+    private val requireBiometricToDecryptKey = booleanPreferencesKey("require_biometric_to_decrypt")
 
     val dynamicColor: Flow<Boolean> = context.userPrefs.data.map { prefs ->
         prefs[dynamicKey] ?: true
@@ -192,6 +198,7 @@ class UserPreferencesRepository @Inject constructor(
             defaultCameraDeviceId = prefs[defaultCameraDeviceIdKey]?.takeIf { it.isNotBlank() },
             cameraEncode = prefs[cameraEncodeKey] ?: true,
             defaultClipboardSync = prefs[defaultClipboardSyncKey] ?: true,
+            requireBiometricToDecrypt = prefs[requireBiometricToDecryptKey] ?: true,
         )
     }
 
@@ -294,6 +301,10 @@ class UserPreferencesRepository @Inject constructor(
 
     suspend fun setDefaultClipboardSync(value: Boolean) {
         context.userPrefs.edit { it[defaultClipboardSyncKey] = value }
+    }
+
+    suspend fun setRequireBiometricToDecrypt(value: Boolean) {
+        context.userPrefs.edit { it[requireBiometricToDecryptKey] = value }
     }
 
     suspend fun removeCustomResolution(value: String) {

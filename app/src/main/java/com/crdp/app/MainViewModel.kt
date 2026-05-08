@@ -130,6 +130,18 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch { userPreferencesRepository.setDefaultClipboardSync(value) }
     }
 
+    /**
+     * Persists the new preference and re-keys all stored passwords to match.
+     * Should be called while the biometric auth window is still valid (i.e. shortly after
+     * the user authenticated via VaultGate) so that keys bound to biometric can be read.
+     */
+    fun setRequireBiometricToDecrypt(value: Boolean) {
+        viewModelScope.launch {
+            userPreferencesRepository.setRequireBiometricToDecrypt(value)
+            profileRepository.rekeyAllPasswords(value)
+        }
+    }
+
     private val _vaultUnlockedAt = MutableStateFlow<Long?>(null)
     val vaultUnlockedAt = _vaultUnlockedAt.asStateFlow()
 

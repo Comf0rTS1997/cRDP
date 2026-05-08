@@ -108,7 +108,7 @@ class ConnectionEditorViewModel @Inject constructor(
     fun updateCameraMode(value: CameraMode) = _state.update { it.copy(cameraMode = value) }
     fun updateCameraDeviceId(value: String?) = _state.update { it.copy(cameraDeviceId = value?.takeIf { v -> v.isNotBlank() }) }
 
-    fun save(onDone: (String) -> Unit) {
+    fun save(requireUserAuth: Boolean, onDone: (String) -> Unit) {
         viewModelScope.launch {
             val s = _state.value
             val id = s.existingId ?: UUID.randomUUID().toString()
@@ -155,7 +155,7 @@ class ConnectionEditorViewModel @Inject constructor(
                     cameraDeviceId = s.cameraDeviceId,
                 )
             }
-            repository.upsert(profile)
+            repository.upsert(profile, requireUserAuth)
             onDone(profile.id)
         }
     }

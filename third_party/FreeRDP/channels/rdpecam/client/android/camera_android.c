@@ -123,6 +123,7 @@ static UINT cam_android_enumerate(ICamHal* ihal, ICamHalEnumCallback callback,
 	}
 	else
 	{
+		int camera2Count = 0;
 		ACameraIdList* list = NULL;
 		if (ACameraManager_getCameraIdList(mgr, &list) == ACAMERA_OK && list)
 		{
@@ -160,6 +161,7 @@ static UINT cam_android_enumerate(ICamHal* ihal, ICamHalEnumCallback callback,
 					default:
 						continue;
 				}
+				camera2Count++;
 				UINT cb = callback(ecam, hchannel, devId, label);
 				if (cb != CHANNEL_RC_OK)
 				{
@@ -169,6 +171,7 @@ static UINT cam_android_enumerate(ICamHal* ihal, ICamHalEnumCallback callback,
 			}
 			ACameraManager_deleteCameraIdList(list);
 		}
+		WLog_INFO(TAG, "cam_android_enumerate: %d Camera2 device(s) found", camera2Count);
 		ACameraManager_delete(mgr);
 	}
 
@@ -198,9 +201,12 @@ static UINT cam_android_enumerate(ICamHal* ihal, ICamHalEnumCallback callback,
 /*
  * ICamHal::GetMediaTypeDescriptions
  *
- * For now we advertise a single 720p30 NV12 + H.264 capability. A future revision
- * will probe Camera2 SCALER_AVAILABLE_STREAM_CONFIGURATIONS and yield the actual
- * device-supported formats; the channel will pick whichever it likes from the list.
+ * Advertise a single 720p30 capability at the format the Android HAL can actually
+ * deliver: H.264 passthrough (AMediaCodec encoder path) preferred, NV12 raw as
+ * fallback (AImageReader path; the channel layer re-encodes). Returns the index
+ * into supportedFormats[] that corresponds to the chosen input format, as required
+ * by the ICamHal contract. Returning the count rather than an index is an
+ * out-of-bounds read when the caller does supportedFormats[formatIndex].
  */
 static INT16 cam_android_get_media_type_descriptions(ICamHal* ihal, const char* deviceId,
                                                      int streamIndex,
@@ -212,27 +218,39 @@ static INT16 cam_android_get_media_type_descriptions(ICamHal* ihal, const char* 
 	WINPR_UNUSED(ihal);
 	WINPR_UNUSED(deviceId);
 	WINPR_UNUSED(streamIndex);
-	if (!mediaTypes || !nMediaTypes || !supportedFormats || nSupportedFormats == 0)
+	if (!mediaTypes || !nMediaTypes || !supportedFormats || nSupportedFormats == 0 ||
+	    *nMediaTypes < 1)
 		return -1;
 
-	size_t out = 0;
-	const size_t cap = *nMediaTypes;
-
-	for (size_t i = 0; i < nSupportedFormats && out < cap; ++i)
+	/* Pick the first format in priority order that the HAL can deliver.
+	 * Camera2 NDK gives us either H264 (encoder path) or NV12 (raw path). */
+	static const CAM_MEDIA_FORMAT preferred[] = { CAM_MEDIA_FORMAT_H264, CAM_MEDIA_FORMAT_NV12 };
+	INT16 bestIdx = -1;
+	for (size_t p = 0; p < ARRAYSIZE(preferred) && bestIdx < 0; ++p)
 	{
-		CAM_MEDIA_TYPE_DESCRIPTION* d = &mediaTypes[out];
-		memset(d, 0, sizeof(*d));
-		d->Format = supportedFormats[i].outputFormat;
-		d->Width = 1280;
-		d->Height = 720;
-		d->FrameRateNumerator = 30;
-		d->FrameRateDenominator = 1;
-		d->PixelAspectRatioNumerator = 1;
-		d->PixelAspectRatioDenominator = 1;
-		out++;
+		for (size_t i = 0; i < nSupportedFormats; ++i)
+		{
+			if (supportedFormats[i].inputFormat == preferred[p])
+			{
+				bestIdx = (INT16)i;
+				break;
+			}
+		}
 	}
-	*nMediaTypes = out;
-	return (INT16)out;
+	if (bestIdx < 0)
+		return -1;
+
+	CAM_MEDIA_TYPE_DESCRIPTION* d = &mediaTypes[0];
+	memset(d, 0, sizeof(*d));
+	d->Format = supportedFormats[bestIdx].outputFormat;
+	d->Width = 1280;
+	d->Height = 720;
+	d->FrameRateNumerator = 30;
+	d->FrameRateDenominator = 1;
+	d->PixelAspectRatioNumerator = 1;
+	d->PixelAspectRatioDenominator = 1;
+	*nMediaTypes = 1;
+	return bestIdx;
 }
 
 /*

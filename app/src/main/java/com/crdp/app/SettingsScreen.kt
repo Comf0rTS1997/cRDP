@@ -99,6 +99,7 @@ fun SettingsScreen(
     onTouchAsMouse: (Boolean) -> Unit,
     onHapticFeedback: (Boolean) -> Unit,
     onBiometricUnlock: (Boolean) -> Unit,
+    onRequireBiometricToDecrypt: (Boolean) -> Unit,
     onAutoDisconnectIdle: (Boolean) -> Unit,
     onBandwidthProfile: (String) -> Unit,
     onDefaultResolution: (String) -> Unit,
@@ -261,6 +262,17 @@ fun SettingsScreen(
                 icon = Icons.Default.Lock,
                 title = "Biometric unlock",
                 trailing = { Switch(checked = appSettings.biometricUnlock, onCheckedChange = onBiometricUnlock) },
+            )
+            SettingRow(
+                icon = Icons.Default.Lock,
+                title = "Require biometric to decrypt credentials",
+                subtitle = "Biometric gates key access, not just the UI",
+                trailing = {
+                    Switch(
+                        checked = appSettings.requireBiometricToDecrypt,
+                        onCheckedChange = onRequireBiometricToDecrypt,
+                    )
+                },
             )
             SettingRow(
                 icon = Icons.Default.Lock,

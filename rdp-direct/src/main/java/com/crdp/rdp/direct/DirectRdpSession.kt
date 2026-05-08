@@ -1,5 +1,6 @@
 package com.crdp.rdp.direct
 
+import android.view.KeyEvent
 import android.view.Surface
 import com.crdp.core.rdp.RdpSessionPort
 import com.crdp.core.rdp.engine.AudioPlayback
@@ -12,6 +13,7 @@ import com.crdp.core.rdp.engine.EngineState
 import com.crdp.core.rdp.engine.RdpConnectParams
 import com.crdp.core.rdp.engine.RdpEngine
 import com.crdp.core.rdp.engine.RenderOptions
+import com.crdp.core.rdp.input.KeyAction
 import com.crdp.core.rdp.input.KeyEventPayload
 import com.crdp.core.rdp.input.PointerEvent
 import com.crdp.core.rdp.input.TouchContact
@@ -56,6 +58,13 @@ class DirectRdpSession @Inject constructor(
     override val cursor: StateFlow<CursorFrame?> = engine.cursor
 
     private var stateJob: Job? = null
+
+    /**
+     * Tracks modifier bits we have already reflected to the native layer via synthetic
+     * or physical modifier keys. FreeRDP JNI ignores `meta` on `sendKey`, so we emit
+     * explicit Ctrl/Alt/Shift/Meta down/up before non-modifier keys when needed.
+     */
+    private var lastForwardedModifierMeta: Int = 0
 
     init {
         stateJob = scope.launch {
@@ -141,11 +150,39 @@ class DirectRdpSession @Inject constructor(
         engine.sendTouchContacts(contacts)
 
     override fun onKeyEvent(event: KeyEventPayload) {
-        engine.sendKey(
-            scancode = event.keyCode,
-            action = event.action,
-            meta = event.metaState,
-        )
+        val targetMeta = event.metaState and SYNTH_MODIFIER_MASK
+        if (isModifierKeyCode(event.keyCode)) {
+            sendEngineScanOrKey(event)
+            lastForwardedModifierMeta = targetMeta
+            return
+        }
+        if (targetMeta != lastForwardedModifierMeta) {
+            reconcileModifiers(lastForwardedModifierMeta, targetMeta)
+            lastForwardedModifierMeta = targetMeta
+        }
+        sendEngineScanOrKey(event)
+    }
+
+    /** Prefer Linux HID scan codes from hardware keyboards; fall back to Android keyCode. */
+    private fun sendEngineScanOrKey(event: KeyEventPayload) {
+        val code = if (event.scanCode != 0) event.scanCode else event.keyCode
+        engine.sendKey(scancode = code, action = event.action, meta = event.metaState)
+    }
+
+    private fun reconcileModifiers(from: Int, to: Int) {
+        val releaseBits = from and to.inv()
+        val pressBits = to and from.inv()
+        for (i in MODIFIER_ORDER.indices.reversed()) {
+            val bit = MODIFIER_ORDER[i].first
+            if (releaseBits and bit != 0) {
+                engine.sendKey(MODIFIER_ORDER[i].second, KeyAction.Up, 0)
+            }
+        }
+        for ((bit, keyCode) in MODIFIER_ORDER) {
+            if (pressBits and bit != 0) {
+                engine.sendKey(keyCode, KeyAction.Down, 0)
+            }
+        }
     }
 
     private fun EngineState.toSessionState(): SessionState = when (this) {
@@ -155,5 +192,37 @@ class DirectRdpSession @Inject constructor(
         is EngineState.Connected -> SessionState.Connected(detail, bytesSent, bytesReceived)
         is EngineState.Disconnected -> SessionState.Disconnected(reason)
         is EngineState.Error -> SessionState.Error(message)
+    }
+
+    private fun isModifierKeyCode(keyCode: Int): Boolean = when (keyCode) {
+        KeyEvent.KEYCODE_SHIFT_LEFT,
+        KeyEvent.KEYCODE_SHIFT_RIGHT,
+        KeyEvent.KEYCODE_ALT_LEFT,
+        KeyEvent.KEYCODE_ALT_RIGHT,
+        KeyEvent.KEYCODE_CTRL_LEFT,
+        KeyEvent.KEYCODE_CTRL_RIGHT,
+        KeyEvent.KEYCODE_META_LEFT,
+        KeyEvent.KEYCODE_META_RIGHT,
+        KeyEvent.KEYCODE_SYM,
+        -> true
+        else -> false
+    }
+
+    private companion object {
+        private val SYNTH_MODIFIER_MASK: Int =
+            KeyEvent.META_SHIFT_ON or
+                KeyEvent.META_ALT_ON or
+                KeyEvent.META_CTRL_ON or
+                KeyEvent.META_META_ON or
+                KeyEvent.META_SYM_ON
+
+        /** Press order; release uses reverse order. */
+        private val MODIFIER_ORDER: List<Pair<Int, Int>> = listOf(
+            KeyEvent.META_CTRL_ON to KeyEvent.KEYCODE_CTRL_LEFT,
+            KeyEvent.META_ALT_ON to KeyEvent.KEYCODE_ALT_LEFT,
+            KeyEvent.META_SHIFT_ON to KeyEvent.KEYCODE_SHIFT_LEFT,
+            KeyEvent.META_META_ON to KeyEvent.KEYCODE_META_LEFT,
+            KeyEvent.META_SYM_ON to KeyEvent.KEYCODE_SYM,
+        )
     }
 }

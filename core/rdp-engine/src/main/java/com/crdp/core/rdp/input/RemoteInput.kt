@@ -21,6 +21,8 @@ data class KeyEventPayload(
     val keyCode: Int,
     val metaState: Int,
     val action: KeyAction,
+    /** Linux/input scan code from [android.view.KeyEvent.getScanCode]; 0 if unknown (e.g. IME). */
+    val scanCode: Int = 0,
 )
 
 enum class KeyAction {

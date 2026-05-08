@@ -126,6 +126,10 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch { userPreferencesRepository.setDefaultCameraDeviceId(value) }
     }
 
+    fun setDefaultClipboardSync(value: Boolean) {
+        viewModelScope.launch { userPreferencesRepository.setDefaultClipboardSync(value) }
+    }
+
     /**
      * Persists the new preference and re-keys all stored passwords to match.
      * Should be called while the biometric auth window is still valid (i.e. shortly after

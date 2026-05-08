@@ -160,6 +160,8 @@ data class SessionUserSettings(
     val cameraEncode: Boolean = true,
     /** App-wide default for clipboard sync when a connection uses “app default”. */
     val defaultClipboardSync: Boolean = true,
+    /** Use the smaller (36dp) in-session dock buttons. Off restores the original 48dp Material default. */
+    val compactToolbar: Boolean = true,
 )
 
 @Composable
@@ -368,6 +370,20 @@ private fun SessionScreen(
     // Dock layout bounds kept in sync via SideEffect; read from the pointerInput coroutine
     // to exclude dock-area touches from RDP input processing.
     val dockBoundsRef = remember { mutableStateOf<Rect?>(null) }
+
+    // Confirmation gate for explicit disconnect (close button / menu item). The 10s
+    // grace window matches MS Remote Desktop: a tap right after connect is almost
+    // always accidental, so just dismiss; once the user has actually started working
+    // we make them confirm before tearing the session down.
+    val sessionStartedAt = remember { System.currentTimeMillis() }
+    var confirmDisconnect by remember { mutableStateOf(false) }
+    val attemptDisconnect: () -> Unit = {
+        if (System.currentTimeMillis() - sessionStartedAt > 10_000L) {
+            confirmDisconnect = true
+        } else {
+            onBack()
+        }
+    }
 
     // Surface dimensions (updated from SurfaceHolder callbacks on main thread).
     // Use an explicit MutableState so the AndroidView factory lambda captures the reference.
@@ -601,13 +617,25 @@ private fun SessionScreen(
         val screenWPx = constraints.maxWidth.toFloat()
         val screenHPx = constraints.maxHeight.toFloat()
 
-        // Dock sizing: collapsed = 1 chevron (48dp) + 8dp padding×2 = 64dp
-        //              edge-expanded = chevron + Keyboard + Mouse + Menu (4×48=192) + padding = 208dp
-        //              free-floating = Keyboard + Mouse + Menu (144) + padding = 160dp
-        val collapsedDockWPx = with(density) { 64.dp.toPx() }
-        val edgeExpandedDockWPx = with(density) { 208.dp.toPx() }
-        val freeDockWPx = with(density) { 160.dp.toPx() }
-        val dockHPx = with(density) { 60.dp.toPx() }
+        // Dock sizing depends on `compactToolbar`. Counts assume the dock has 5 slots in
+        // the edge-expanded layout (chevron + Keyboard + Mouse + Menu + Close) and 4 slots
+        // when free-floating (no chevron).
+        //   compact (36dp button, 4dp horizontal padding):
+        //     collapsed = 36 + 4×2 = 44dp; edge-expanded = 5×36 + 4×2 = 188dp; free = 4×36 + 4×2 = 152dp
+        //   default (48dp button, 8dp horizontal padding):
+        //     collapsed = 48 + 8×2 = 64dp; edge-expanded = 5×48 + 8×2 = 256dp; free = 4×48 + 8×2 = 208dp
+        val collapsedDockWPx = with(density) {
+            (if (settings.compactToolbar) 44.dp else 64.dp).toPx()
+        }
+        val edgeExpandedDockWPx = with(density) {
+            (if (settings.compactToolbar) 188.dp else 256.dp).toPx()
+        }
+        val freeDockWPx = with(density) {
+            (if (settings.compactToolbar) 152.dp else 208.dp).toPx()
+        }
+        val dockHPx = with(density) {
+            (if (settings.compactToolbar) 48.dp else 60.dp).toPx()
+        }
         val snapPx = with(density) { 64.dp.toPx() }
 
         // Initialise position: right edge, upper 1/3 of screen.
@@ -727,8 +755,12 @@ private fun SessionScreen(
                     shape = RoundedCornerShape(28.dp),
                     color = DockBackground,
                 ) {
+                    val compact = settings.compactToolbar
                     Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                        modifier = Modifier.padding(
+                            horizontal = if (compact) 4.dp else 8.dp,
+                            vertical = if (compact) 4.dp else 6.dp,
+                        ),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         if (showCollapsed) {
@@ -740,6 +772,7 @@ private fun SessionScreen(
                                     Icons.AutoMirrored.Filled.KeyboardArrowRight
                                 },
                                 onClick = { isEdgeExpanded = true },
+                                compact = compact,
                             )
                         } else {
                             // Edge-expanded: leading chevron collapses back to edge.
@@ -747,6 +780,7 @@ private fun SessionScreen(
                                 DockButton(
                                     icon = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                                     onClick = { isEdgeExpanded = false },
+                                    compact = compact,
                                 )
                             }
                             DockButton(
@@ -757,6 +791,7 @@ private fun SessionScreen(
                                     val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
                                     imm.showSoftInput(editText, InputMethodManager.SHOW_FORCED)
                                 },
+                                compact = compact,
                             )
                             DockButton(
                                 icon = Icons.Default.Mouse,
@@ -769,11 +804,13 @@ private fun SessionScreen(
                                     val label = if (inputMode == InputMode.Trackpad) "Trackpad mode" else "Direct touch mode"
                                     scope.launch { snackbarHostState.showSnackbar(label) }
                                 },
+                                compact = compact,
                             )
                             Box {
                                 DockButton(
                                     icon = Icons.Default.Menu,
                                     onClick = { dockMenuOpen = true },
+                                    compact = compact,
                                 )
                                 DropdownMenu(
                                     expanded = dockMenuOpen,
@@ -846,22 +883,52 @@ private fun SessionScreen(
                                         },
                                         onClick = {
                                             dockMenuOpen = false
-                                            onBack()
+                                            attemptDisconnect()
                                         },
                                     )
                                 }
                             }
+                            // Close goes on the main toolbar so disconnect is always one tap
+                            // away — previously it was buried in the overflow menu.
+                            DockButton(
+                                icon = Icons.Default.Close,
+                                onClick = attemptDisconnect,
+                                compact = compact,
+                                tint = DisconnectRed,
+                            )
                             // Trailing chevron when on left edge: collapses back to the edge.
                             if (isOnEdge && isOnLeftEdge) {
                                 DockButton(
                                     icon = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
                                     onClick = { isEdgeExpanded = false },
+                                    compact = compact,
                                 )
                             }
                         }
                     }
                 }
             }
+        }
+
+        if (confirmDisconnect) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { confirmDisconnect = false },
+                title = { Text("Disconnect session?") },
+                text = { Text("This will end the remote session.") },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(
+                        onClick = {
+                            confirmDisconnect = false
+                            onBack()
+                        },
+                    ) { Text("Disconnect", color = DisconnectRed) }
+                },
+                dismissButton = {
+                    androidx.compose.material3.TextButton(
+                        onClick = { confirmDisconnect = false },
+                    ) { Text("Cancel") }
+                },
+            )
         }
 
         // Hidden 1dp EditText that provides an InputConnection for soft-keyboard input.
@@ -936,9 +1003,16 @@ private fun SessionScreen(
 }
 
 @Composable
-private fun DockButton(icon: ImageVector, onClick: () -> Unit) {
-    IconButton(onClick = onClick, modifier = Modifier.size(48.dp)) {
-        Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(24.dp))
+private fun DockButton(
+    icon: ImageVector,
+    onClick: () -> Unit,
+    compact: Boolean = false,
+    tint: Color = Color.White,
+) {
+    val buttonSize = if (compact) 36.dp else 48.dp
+    val iconSize = if (compact) 20.dp else 24.dp
+    IconButton(onClick = onClick, modifier = Modifier.size(buttonSize)) {
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(iconSize))
     }
 }
 

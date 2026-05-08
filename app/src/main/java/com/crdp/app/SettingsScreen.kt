@@ -116,6 +116,7 @@ fun SettingsScreen(
     onDefaultAudioQuality: (String) -> Unit,
     onDefaultCameraMode: (String) -> Unit,
     onDefaultClipboardSync: (Boolean) -> Unit,
+    onCompactToolbar: (Boolean) -> Unit,
     onOpenVault: () -> Unit,
     onOpenLicenses: () -> Unit,
     versionLabel: String,
@@ -301,6 +302,14 @@ fun SettingsScreen(
                 subtitle = "Sampling filter used by GLES backend",
                 value = appSettings.renderSampling,
                 onClick = { chooser = ChooserKind.RenderSampling },
+            )
+            SettingRow(
+                icon = Icons.Default.Tune,
+                title = "Compact toolbar",
+                subtitle = "Smaller in-session dock buttons (36dp)",
+                trailing = {
+                    Switch(checked = appSettings.compactToolbar, onCheckedChange = onCompactToolbar)
+                },
             )
 
             SectionHeader("About")

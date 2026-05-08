@@ -208,6 +208,7 @@ class MainActivity : FragmentActivity() {
                                 onDefaultAudioQuality = mainViewModel::setDefaultAudioQuality,
                                 onDefaultCameraMode = mainViewModel::setDefaultCameraMode,
                                 onDefaultClipboardSync = mainViewModel::setDefaultClipboardSync,
+                                onCompactToolbar = mainViewModel::setCompactToolbar,
                                 onOpenVault = { navController.navigate("settings/vault") },
                                 onOpenLicenses = { navController.navigate("settings/licenses") },
                                 versionLabel = "Version 0 \u00B7 Build $0",
@@ -312,6 +313,7 @@ class MainActivity : FragmentActivity() {
                                     defaultCameraDeviceId = appSettings.defaultCameraDeviceId,
                                     cameraEncode = appSettings.cameraEncode,
                                     defaultClipboardSync = appSettings.defaultClipboardSync,
+                                    compactToolbar = appSettings.compactToolbar,
                                 ),
                             )
                         }

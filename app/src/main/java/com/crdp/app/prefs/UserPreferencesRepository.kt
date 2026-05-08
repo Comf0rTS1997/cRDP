@@ -47,6 +47,8 @@ data class AppSettings(
      * window) in addition to the UI-level VaultGate. Defaults to true for defence-in-depth.
      */
     val requireBiometricToDecrypt: Boolean = true,
+    /** Use the smaller (36dp) in-session dock buttons. Off restores the original 48dp Material default. */
+    val compactToolbar: Boolean = true,
 )
 
 object AudioModes {
@@ -170,6 +172,7 @@ class UserPreferencesRepository @Inject constructor(
     private val cameraEncodeKey = booleanPreferencesKey("camera_encode_h264")
     private val defaultClipboardSyncKey = booleanPreferencesKey("default_clipboard_sync")
     private val requireBiometricToDecryptKey = booleanPreferencesKey("require_biometric_to_decrypt")
+    private val compactToolbarKey = booleanPreferencesKey("compact_toolbar")
 
     val dynamicColor: Flow<Boolean> = context.userPrefs.data.map { prefs ->
         prefs[dynamicKey] ?: true
@@ -199,6 +202,7 @@ class UserPreferencesRepository @Inject constructor(
             cameraEncode = prefs[cameraEncodeKey] ?: true,
             defaultClipboardSync = prefs[defaultClipboardSyncKey] ?: true,
             requireBiometricToDecrypt = prefs[requireBiometricToDecryptKey] ?: true,
+            compactToolbar = prefs[compactToolbarKey] ?: true,
         )
     }
 
@@ -305,6 +309,10 @@ class UserPreferencesRepository @Inject constructor(
 
     suspend fun setRequireBiometricToDecrypt(value: Boolean) {
         context.userPrefs.edit { it[requireBiometricToDecryptKey] = value }
+    }
+
+    suspend fun setCompactToolbar(value: Boolean) {
+        context.userPrefs.edit { it[compactToolbarKey] = value }
     }
 
     suspend fun removeCustomResolution(value: String) {

@@ -142,6 +142,10 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    fun setCompactToolbar(value: Boolean) {
+        viewModelScope.launch { userPreferencesRepository.setCompactToolbar(value) }
+    }
+
     private val _vaultUnlockedAt = MutableStateFlow<Long?>(null)
     val vaultUnlockedAt = _vaultUnlockedAt.asStateFlow()
 

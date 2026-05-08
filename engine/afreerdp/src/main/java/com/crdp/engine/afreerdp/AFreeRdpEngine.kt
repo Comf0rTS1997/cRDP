@@ -398,6 +398,7 @@ class AFreeRdpEngine @Inject constructor(
                 subject = subject,
                 issuer = issuer,
                 fingerprint = fingerprint,
+                flags = flags,
             ),
         ).let { resp ->
             when (resp) {
@@ -430,6 +431,7 @@ class AFreeRdpEngine @Inject constructor(
                 oldSubject = oldSubject,
                 oldIssuer = oldIssuer,
                 oldFingerprint = oldFingerprint,
+                flags = flags,
             ),
         ).let { resp ->
             when (resp) {
@@ -619,7 +621,6 @@ class AFreeRdpEngine @Inject constructor(
             val enc = if (p.cameraEncode) "1" else "0"
             args += "/dvc:rdpecam,device:$devTok,encode:$enc,quality:2"
         }
-        args += "/cert:ignore"
         args += "/sec:nla"
         // Restrict Negotiate SPNEGO to NTLM only; skips Kerberos (no KDC in direct-IP scenarios).
         args += "/auth-pkg-list:ntlm"

@@ -27,7 +27,9 @@ class VaultViewModel @Inject constructor(
     fun clearPassword(profileId: String) {
         viewModelScope.launch {
             val profile = repository.getById(profileId) as? DirectConnectionProfile ?: return@launch
-            repository.upsert(profile.copy(password = ""))
+            // Clearing the password means no ciphertext is written, so the requireUserAuth
+            // flag is moot here — pass false to avoid pointlessly creating an auth-bound key.
+            repository.upsert(profile.copy(password = ""), requireUserAuth = false)
         }
     }
 }

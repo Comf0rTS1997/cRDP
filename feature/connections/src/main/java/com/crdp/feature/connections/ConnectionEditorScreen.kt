@@ -58,6 +58,7 @@ fun ConnectionEditorRoute(
     onBack: () -> Unit,
     onSaved: (String) -> Unit,
     onSaveAndConnect: (String) -> Unit,
+    requireBiometricToDecrypt: Boolean,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -111,10 +112,10 @@ fun ConnectionEditorRoute(
                     ) { Text("Test") }
                     Spacer(modifier = Modifier.weight(1f))
                     FilledTonalButton(
-                        onClick = { viewModel.save(onSaved) },
+                        onClick = { viewModel.save(requireBiometricToDecrypt, onSaved) },
                         modifier = Modifier.padding(end = 8.dp),
                     ) { Text("Save") }
-                    Button(onClick = { viewModel.save(onSaveAndConnect) }) {
+                    Button(onClick = { viewModel.save(requireBiometricToDecrypt, onSaveAndConnect) }) {
                         Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(18.dp))
                         Text("Save & connect", modifier = Modifier.padding(start = 4.dp))
                     }

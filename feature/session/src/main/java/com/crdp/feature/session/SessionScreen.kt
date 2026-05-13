@@ -5,6 +5,8 @@ import android.os.Build
 import android.util.Log
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.view.InputDevice
+import android.view.MotionEvent
 import android.view.KeyEvent as AndroidKeyEvent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
@@ -61,6 +63,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
@@ -112,6 +115,14 @@ import kotlin.math.roundToInt
 
 private val DockBackground = Color(0xAA000000)
 private val DisconnectRed = Color(0xFFBA1A1A)
+
+// MotionEvent.buttonState bitmask → legacy RDP button id (1=left, 2=right, 3=middle).
+// BACK/FORWARD are intentionally omitted (no PTR_XFLAGS support in this engine yet).
+private val MOUSE_BUTTONS: List<Pair<Int, Int>> = listOf(
+    MotionEvent.BUTTON_PRIMARY to 1,
+    MotionEvent.BUTTON_SECONDARY to 2,
+    MotionEvent.BUTTON_TERTIARY to 3,
+)
 
 enum class InputMode { DirectTouch, Trackpad }
 
@@ -377,6 +388,11 @@ private fun SessionScreen(
     var fingerDownY by remember { mutableStateOf(0f) }
     val tapThresholdPx = with(density) { 12.dp.toPx() }
 
+    // Tracks the previous MotionEvent.buttonState bitmask so we can emit Up/Down
+    // transitions for left/right/middle separately when a hardware mouse delivers
+    // events through dispatchCapturedPointerEvent or dispatchGenericMotionEvent.
+    var lastMouseButtons by remember { mutableStateOf(0) }
+
     fun markInteraction() {
         lastInteractionAt = System.currentTimeMillis()
     }
@@ -385,6 +401,120 @@ private fun SessionScreen(
         if (settings.hapticFeedback) {
             view.performHapticFeedback(constant)
         }
+    }
+
+    /**
+     * Single entry point for hardware mouse / touchpad / stylus motion. Fed from
+     * three callsites: setOnCapturedPointerListener (relative deltas while pointer
+     * capture is active), setOnGenericMotionListener (hover + scroll when capture
+     * is not active), and the Compose pointerInput when a pointer of type Mouse
+     * or Stylus arrives via dispatchTouchEvent (button-press path on devices
+     * without pointer capture).
+     *
+     * @param captured true when delivered via the captured-pointer path
+     *   (AXIS_RELATIVE_X/Y carry the deltas, [ev]'s x/y are clamped to the view
+     *   and must NOT be used as absolute positions).
+     */
+    fun handleHardwareMouseMotion(ev: MotionEvent, captured: Boolean): Boolean {
+        val action = ev.actionMasked
+
+        // Update virtual cursor position from this event.
+        when (action) {
+            MotionEvent.ACTION_HOVER_ENTER,
+            MotionEvent.ACTION_HOVER_MOVE,
+            MotionEvent.ACTION_HOVER_EXIT,
+            MotionEvent.ACTION_DOWN,
+            MotionEvent.ACTION_MOVE,
+            MotionEvent.ACTION_UP,
+            MotionEvent.ACTION_BUTTON_PRESS,
+            MotionEvent.ACTION_BUTTON_RELEASE -> {
+                if (captured) {
+                    val dx = ev.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
+                    val dy = ev.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
+                    cursorX = (cursorX + dx).coerceIn(0f, rdpW.toFloat())
+                    cursorY = (cursorY + dy).coerceIn(0f, rdpH.toFloat())
+                } else if (transform.scale > 0f) {
+                    val (rx, ry) = transform.toRdp(ev.x, ev.y)
+                    cursorX = rx.coerceIn(0f, rdpW.toFloat())
+                    cursorY = ry.coerceIn(0f, rdpH.toFloat())
+                }
+            }
+        }
+
+        // Emit movement first so the server cursor is at the new position before
+        // a button transition lands. Skip on button-only events.
+        val isMotionAction = action == MotionEvent.ACTION_HOVER_MOVE ||
+            action == MotionEvent.ACTION_HOVER_ENTER ||
+            action == MotionEvent.ACTION_MOVE ||
+            action == MotionEvent.ACTION_DOWN ||
+            action == MotionEvent.ACTION_UP
+        if (isMotionAction) {
+            val dragging = ev.buttonState != 0
+            port.onPointerEvent(
+                PointerEvent(
+                    x = cursorX,
+                    y = cursorY,
+                    action = if (dragging) PointerAction.Move else PointerAction.Hover,
+                    buttons = 0,
+                    wheelDelta = 0f,
+                    hWheelDelta = 0f,
+                ),
+            )
+            markInteraction()
+        }
+
+        // Button-state transitions → per-button Down/Up. MotionEvent.buttonState is a
+        // bitmask; we diff against the last seen mask to find newly pressed/released
+        // buttons. Each transition becomes one RDP cursor event with the legacy
+        // 1=left / 2=right / 3=middle id.
+        val curButtons = ev.buttonState
+        if (curButtons != lastMouseButtons) {
+            val prev = lastMouseButtons
+            val changed = prev xor curButtons
+            for ((mask, id) in MOUSE_BUTTONS) {
+                if ((changed and mask) != 0) {
+                    val pressed = (curButtons and mask) != 0
+                    if (pressed) haptic(HapticFeedbackConstants.VIRTUAL_KEY)
+                    port.onPointerEvent(
+                        PointerEvent(
+                            x = cursorX,
+                            y = cursorY,
+                            action = if (pressed) PointerAction.Down else PointerAction.Up,
+                            buttons = id,
+                            wheelDelta = 0f,
+                            hWheelDelta = 0f,
+                        ),
+                    )
+                }
+            }
+            lastMouseButtons = curButtons
+            markInteraction()
+        }
+
+        // Scroll wheel. Windows convention: 120 == one detent. AXIS_VSCROLL is the
+        // detent count, signed. AXIS_HSCROLL ditto for horizontal wheels.
+        if (action == MotionEvent.ACTION_SCROLL) {
+            val vsc = ev.getAxisValue(MotionEvent.AXIS_VSCROLL)
+            val hsc = ev.getAxisValue(MotionEvent.AXIS_HSCROLL)
+            if (vsc != 0f || hsc != 0f) {
+                port.onPointerEvent(
+                    PointerEvent(
+                        x = cursorX,
+                        y = cursorY,
+                        action = PointerAction.Hover,
+                        buttons = 0,
+                        // Android AXIS_VSCROLL and RDP wheel rotation use the same sign
+                        // convention (positive = wheel rolling away from user / scroll-up),
+                        // so pass through without flipping.
+                        wheelDelta = vsc * 120f,
+                        hWheelDelta = hsc * 120f,
+                    ),
+                )
+                markInteraction()
+            }
+        }
+
+        return true
     }
 
     LaunchedEffect(Unit) {
@@ -416,26 +546,60 @@ private fun SessionScreen(
         }
     }
 
-    // Capture relative mouse on the Compose root so pointer events stay in-window (DeX task bar, etc.)
-    // without moving focus off the key-handling surface (see focusRequester above).
+    // Capture hardware mouse / touchpad on the Compose root so pointer events stay
+    // in-window (DeX task bar, etc.) without moving focus off the key-handling
+    // surface (see focusRequester above). Three input paths feed handleHardwareMouseMotion:
+    //  - setOnCapturedPointerListener: while pointer capture is active, every mouse
+    //    event arrives here with AXIS_RELATIVE_X/Y deltas (no jumps to absolute
+    //    screen coords). This is the path termux-x11 uses.
+    //  - setOnGenericMotionListener: hover + scroll when capture is not active
+    //    (e.g., before the session is fully connected, or on a device that refused
+    //    capture). Mouse button events do NOT come through this path.
+    //  - Compose pointerInput below: source-routed to MOUSE for the button-press
+    //    fallback on devices without pointer capture support.
     val sessionConnected = sessionState is SessionState.Connected
-    DisposableEffect(sessionConnected, view) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-            return@DisposableEffect onDispose { }
-        }
-        if (!sessionConnected) {
-            return@DisposableEffect onDispose { }
-        }
-        val request = Runnable {
-            runCatching {
-                if (view.isAttachedToWindow) view.requestPointerCapture()
+    // Key on `transform` too: when the surface resizes (DeX, rotation), the captured
+    // mouse-motion handler closes over the new transform on the next effect run.
+    DisposableEffect(sessionConnected, view, transform) {
+        // Mouse-source touchpad/scroll work pre-O too via setOnGenericMotionListener;
+        // pointer-capture-specific wiring is gated below.
+        val genericListener = android.view.View.OnGenericMotionListener { _, ev ->
+            if (!ev.isFromSource(InputDevice.SOURCE_CLASS_POINTER) &&
+                !ev.isFromSource(InputDevice.SOURCE_TOUCHPAD)
+            ) {
+                return@OnGenericMotionListener false
             }
+            handleHardwareMouseMotion(ev, captured = false)
         }
-        view.post(request)
+        view.setOnGenericMotionListener(genericListener)
+
+        var capturedListener: android.view.View.OnCapturedPointerListener? = null
+        var captureRequest: Runnable? = null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && sessionConnected) {
+            capturedListener = android.view.View.OnCapturedPointerListener { _, ev ->
+                handleHardwareMouseMotion(ev, captured = true)
+            }
+            view.setOnCapturedPointerListener(capturedListener)
+            captureRequest = Runnable {
+                runCatching {
+                    if (view.isAttachedToWindow) view.requestPointerCapture()
+                }
+            }
+            view.post(captureRequest)
+        }
+
         onDispose {
-            view.removeCallbacks(request)
-            runCatching {
-                if (view.hasPointerCapture()) view.releasePointerCapture()
+            view.setOnGenericMotionListener(null)
+            if (capturedListener != null) {
+                view.setOnCapturedPointerListener(null)
+            }
+            if (captureRequest != null) {
+                view.removeCallbacks(captureRequest)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    runCatching {
+                        if (view.hasPointerCapture()) view.releasePointerCapture()
+                    }
+                }
             }
         }
     }
@@ -485,6 +649,11 @@ private fun SessionScreen(
                 awaitPointerEventScope {
                     while (true) {
                         val event = awaitPointerEvent(PointerEventPass.Main)
+                        // Hardware mouse + stylus go through setOnCapturedPointerListener /
+                        // setOnGenericMotionListener on the host View. If any pointer in
+                        // this Compose event isn't of type Touch, drop the whole event so
+                        // we don't double-dispatch through the touchscreen path.
+                        if (event.changes.any { it.type != PointerType.Touch }) continue
                         event.changes.forEach { change ->
                             // Skip touches that land on the floating dock.
                             val bounds = dockBoundsRef.value

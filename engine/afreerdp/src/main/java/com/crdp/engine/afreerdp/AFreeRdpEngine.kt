@@ -195,26 +195,39 @@ class AFreeRdpEngine @Inject constructor(
         LibFreeRDP.sendKeyEvent(inst, scancode, action == KeyAction.Down)
     }
 
-    override fun sendPointer(x: Int, y: Int, buttons: Int, action: PointerAction, wheel: Int) {
+    override fun sendPointer(x: Int, y: Int, buttons: Int, action: PointerAction, wheel: Int, hWheel: Int) {
         val inst = instance
         if (inst == 0L) return
         // FreeRDP cursor flags (subset):
-        //   PTR_FLAGS_MOVE        0x0800
-        //   PTR_FLAGS_DOWN        0x8000
-        //   PTR_FLAGS_BUTTON1     0x1000  (left)
-        //   PTR_FLAGS_BUTTON2     0x2000  (right)
-        //   PTR_FLAGS_BUTTON3     0x4000  (middle)
-        //   PTR_FLAGS_WHEEL       0x0200
-        var flags = 0
+        //   PTR_FLAGS_MOVE             0x0800
+        //   PTR_FLAGS_DOWN             0x8000
+        //   PTR_FLAGS_BUTTON1          0x1000  (left)
+        //   PTR_FLAGS_BUTTON2          0x2000  (right)
+        //   PTR_FLAGS_BUTTON3          0x4000  (middle)
+        //   PTR_FLAGS_WHEEL            0x0200
+        //   PTR_FLAGS_HWHEEL           0x0400
+        //   PTR_FLAGS_WHEEL_NEGATIVE   0x0100
+        var moveFlags = 0
         when (action) {
-            PointerAction.Move, PointerAction.Hover -> flags = flags or 0x0800
-            PointerAction.Down -> flags = flags or 0x8000 or buttonFlag(buttons)
-            PointerAction.Up   -> flags = flags or buttonFlag(buttons)
+            PointerAction.Move, PointerAction.Hover -> moveFlags = moveFlags or 0x0800
+            PointerAction.Down -> moveFlags = moveFlags or 0x8000 or buttonFlag(buttons)
+            PointerAction.Up   -> moveFlags = moveFlags or buttonFlag(buttons)
         }
-        if (wheel != 0) {
-            flags = flags or 0x0200 or (wheel and 0xFF)
+        if (moveFlags != 0) {
+            LibFreeRDP.sendCursorEvent(inst, x, y, moveFlags)
         }
-        LibFreeRDP.sendCursorEvent(inst, x, y, flags)
+        // Wheel events ride their own cursor event — VWHEEL and HWHEEL share the
+        // rotation byte / negative-sign flag, so they can't be combined in one PDU.
+        if (wheel != 0) sendWheel(inst, x, y, axis = 0x0200, delta = wheel)
+        if (hWheel != 0) sendWheel(inst, x, y, axis = 0x0400, delta = hWheel)
+    }
+
+    private fun sendWheel(inst: Long, x: Int, y: Int, axis: Int, delta: Int) {
+        // Magnitude in the low 8 bits; sign carried by PTR_FLAGS_WHEEL_NEGATIVE.
+        val magnitude = (if (delta < 0) -delta else delta).coerceAtMost(0xFF)
+        var f = axis or magnitude
+        if (delta < 0) f = f or 0x0100
+        LibFreeRDP.sendCursorEvent(inst, x, y, f)
     }
 
     private fun buttonFlag(buttons: Int): Int = when (buttons) {
@@ -507,7 +520,11 @@ class AFreeRdpEngine @Inject constructor(
         args += "/sec:nla"
         // Restrict Negotiate SPNEGO to NTLM only; skips Kerberos (no KDC in direct-IP scenarios).
         args += "/auth-pkg-list:ntlm"
+        // Bumped to TRACE for the rdpecam family to debug HAL/enumeration negotiation;
+        // global stays at WARN to keep noise low. Switch back to a single
+        // "/log-level:WARN" once camera redirection is verified working.
         args += "/log-level:WARN"
+        args += "/log-filters:com.freerdp.channels.rdpecam-enum.client:DEBUG,com.freerdp.channels.rdpecam-dev.client:DEBUG,com.freerdp.channels.rdpecam-android.client:DEBUG"
         return args.toTypedArray()
     }
 

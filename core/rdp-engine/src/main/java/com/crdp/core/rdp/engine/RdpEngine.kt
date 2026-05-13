@@ -30,5 +30,5 @@ interface RdpEngine {
     fun resolveChallenge(id: String, response: ChallengeResponse)
 
     fun sendKey(scancode: Int, action: KeyAction, meta: Int)
-    fun sendPointer(x: Int, y: Int, buttons: Int, action: PointerAction, wheel: Int)
+    fun sendPointer(x: Int, y: Int, buttons: Int, action: PointerAction, wheel: Int, hWheel: Int = 0)
 }

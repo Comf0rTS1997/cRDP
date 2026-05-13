@@ -140,6 +140,7 @@ class DirectRdpSession @Inject constructor(
             buttons = event.buttons,
             action = event.action,
             wheel = event.wheelDelta.toInt(),
+            hWheel = event.hWheelDelta.toInt(),
         )
     }
 

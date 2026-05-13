@@ -6,6 +6,7 @@ data class PointerEvent(
     val action: PointerAction,
     val buttons: Int,
     val wheelDelta: Float = 0f,
+    val hWheelDelta: Float = 0f,
 )
 
 enum class PointerAction {

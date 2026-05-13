@@ -51,7 +51,7 @@ class StubRdpEngine @Inject constructor() : RdpEngine {
     override fun detachSurface() = Unit
     override fun resolveChallenge(id: String, response: ChallengeResponse) = Unit
     override fun sendKey(scancode: Int, action: KeyAction, meta: Int) = Unit
-    override fun sendPointer(x: Int, y: Int, buttons: Int, action: PointerAction, wheel: Int) = Unit
+    override fun sendPointer(x: Int, y: Int, buttons: Int, action: PointerAction, wheel: Int, hWheel: Int) = Unit
 
     private companion object {
         const val MESSAGE = "RDP engine not configured (build with -Pcrdp.engine=afreerdp)"

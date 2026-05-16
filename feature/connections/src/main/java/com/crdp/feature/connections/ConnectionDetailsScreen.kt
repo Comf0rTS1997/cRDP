@@ -50,6 +50,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -258,6 +259,11 @@ private fun ConnectionDetailsScreen(
                     StatCard(label = "Color depth", value = colorDepthStr, modifier = Modifier.weight(1f))
                     StatCard(label = "Bandwidth", value = bandwidthProfile, modifier = Modifier.weight(1f))
                 }
+                StatCard(
+                    label = stringResource(R.string.connections_clipboard_details),
+                    value = clipboardSyncLabel(profile),
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
 
             SectionLabel("Display & performance")
@@ -295,6 +301,19 @@ private fun ConnectionDetailsScreen(
 
             Spacer(Modifier.height(32.dp))
         }
+    }
+}
+
+private fun clipboardSyncLabel(profile: ConnectionProfile): String = when (profile) {
+    is DirectConnectionProfile -> when (profile.clipboardSyncOverride) {
+        null -> "App default"
+        true -> "On"
+        false -> "Off"
+    }
+    is GatewayConnectionProfile -> when (profile.clipboardSyncOverride) {
+        null -> "App default"
+        true -> "On"
+        false -> "Off"
     }
 }
 

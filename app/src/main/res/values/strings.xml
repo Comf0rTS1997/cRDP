@@ -2,4 +2,6 @@
 <resources>
     <string name="app_name">cRdp</string>
     <string name="accessibility_service_label">cRDP keyboard capture</string>
+    <string name="settings_clipboard_sync_title">Clipboard sync</string>
+    <string name="settings_clipboard_sync_subtitle">Two-way plain text between this device and the remote desktop (direct connections)</string>
 </resources>

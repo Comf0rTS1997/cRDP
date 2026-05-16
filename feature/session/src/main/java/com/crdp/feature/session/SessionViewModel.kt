@@ -139,6 +139,10 @@ class SessionViewModel @Inject constructor(
     // No init-time wait — camera is opt-in and a missing hint just resolves to "Off".
     private val _cameraDefaultsHint = MutableStateFlow<CameraDefaultsHint?>(null)
 
+    // Clipboard defaults from app settings; wait for non-null like audio so the first connect
+    // does not race ahead of SessionRoute's LaunchedEffect.
+    private val _clipboardDefaultsHint = MutableStateFlow<Boolean?>(null)
+
     private fun activatePort(port: RdpSessionPort) {
         activePort = port
         challengeForwardJob?.cancel()
@@ -171,6 +175,7 @@ class SessionViewModel @Inject constructor(
             // Same race for audio: a profile that says "use app default" needs the
             // app-level audio settings before we can build the argv.
             _audioDefaultsHint.filter { it != null }.first()
+            _clipboardDefaultsHint.filter { it != null }.first()
             val isAuto = when (profile) {
                 is DirectConnectionProfile -> profile.autoResolution
                 is GatewayConnectionProfile -> profile.autoResolution
@@ -186,12 +191,12 @@ class SessionViewModel @Inject constructor(
                 if (w > 0 && h > 0) {
                     autoProfile = null
                     autoPort = null
-                    val resolved = applyEffectiveCamera(applyEffectiveAudio(applyEffectiveScale(
+                    val resolved = applyEffectiveClipboard(applyEffectiveCamera(applyEffectiveAudio(applyEffectiveScale(
                         when (profile) {
                             is DirectConnectionProfile -> profile.copy(width = w, height = h)
                             is GatewayConnectionProfile -> profile.copy(width = w, height = h)
                         },
-                    )))
+                    ))))
                     port.connect(resolved).onFailure { e ->
                         _loadError.value = e.message ?: "Connection failed"
                     }.onSuccess {
@@ -202,7 +207,7 @@ class SessionViewModel @Inject constructor(
             } else {
                 val port = sessionFactory.portFor(profile)
                 activatePort(port)
-                val resolved = applyEffectiveCamera(applyEffectiveAudio(applyEffectiveScale(profile)))
+                val resolved = applyEffectiveClipboard(applyEffectiveCamera(applyEffectiveAudio(applyEffectiveScale(profile))))
                 port.connect(resolved).onFailure { e ->
                     _loadError.value = e.message ?: "Connection failed"
                 }.onSuccess {
@@ -297,6 +302,22 @@ class SessionViewModel @Inject constructor(
 
     fun setCameraDefaultsHint(hint: CameraDefaultsHint) {
         _cameraDefaultsHint.value = hint
+    }
+
+    private fun applyEffectiveClipboard(profile: ConnectionProfile): ConnectionProfile {
+        val enabled = _clipboardDefaultsHint.value ?: true
+        return when (profile) {
+            is DirectConnectionProfile -> profile.copy(
+                clipboardSyncOverride = profile.clipboardSyncOverride ?: enabled,
+            )
+            is GatewayConnectionProfile -> profile.copy(
+                clipboardSyncOverride = profile.clipboardSyncOverride ?: enabled,
+            )
+        }
+    }
+
+    fun setClipboardDefaultsHint(enabled: Boolean) {
+        _clipboardDefaultsHint.value = enabled
     }
 
     /**
@@ -401,12 +422,12 @@ class SessionViewModel @Inject constructor(
         autoPort = null
         // activatePort already called when port was created; no need to call again.
         viewModelScope.launch {
-            val resolved = applyEffectiveCamera(applyEffectiveAudio(applyEffectiveScale(
+            val resolved = applyEffectiveClipboard(applyEffectiveCamera(applyEffectiveAudio(applyEffectiveScale(
                 when (profile) {
                     is DirectConnectionProfile -> profile.copy(width = w, height = h)
                     is GatewayConnectionProfile -> profile.copy(width = w, height = h)
                 },
-            )))
+            ))))
             port.connect(resolved).onFailure { e ->
                 _loadError.value = e.message ?: "Connection failed"
             }.onSuccess {
@@ -427,7 +448,7 @@ class SessionViewModel @Inject constructor(
                 is DirectConnectionProfile -> profile.copy(width = w, height = h)
                 is GatewayConnectionProfile -> profile.copy(width = w, height = h)
             }
-            val resolved = applyEffectiveCamera(applyEffectiveAudio(
+            val resolved = applyEffectiveClipboard(applyEffectiveCamera(applyEffectiveAudio(
                 if (overrideScale != null) {
                     when (resized) {
                         is DirectConnectionProfile -> resized.copy(desktopScaleFactor = overrideScale)
@@ -436,7 +457,7 @@ class SessionViewModel @Inject constructor(
                 } else {
                     applyEffectiveScale(resized)
                 }
-            ))
+            )))
             val port = sessionFactory.portFor(resolved)
             activatePort(port)
             port.connect(resolved).onFailure { e ->

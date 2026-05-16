@@ -16,6 +16,7 @@ import com.crdp.core.rdp.engine.RenderOptions
 import com.crdp.core.rdp.input.KeyAction
 import com.crdp.core.rdp.input.KeyEventPayload
 import com.crdp.core.rdp.input.PointerEvent
+import com.crdp.core.rdp.input.TouchContact
 import com.crdp.core.rdp.input.WindowsVirtualKey
 import com.crdp.core.rdp.model.AudioMode
 import com.crdp.core.rdp.model.CameraMode
@@ -112,6 +113,7 @@ class DirectRdpSession @Inject constructor(
                     CameraMode.Specific -> CameraRedirect.Specific
                 },
                 cameraDeviceId = profile.cameraDeviceId,
+                clipboardSyncEnabled = profile.clipboardSyncOverride ?: true,
             ),
         )
     }
@@ -144,9 +146,12 @@ class DirectRdpSession @Inject constructor(
             buttons = event.buttons,
             action = event.action,
             wheel = event.wheelDelta.toInt(),
-            hWheel = event.hWheelDelta.toInt(),
+            wheelH = event.wheelDeltaH.toInt(),
         )
     }
+
+    override fun onTouchContacts(contacts: List<TouchContact>): Boolean =
+        engine.sendTouchContacts(contacts)
 
     override fun onKeyEvent(event: KeyEventPayload) {
         val targetMeta = event.metaState and SYNTH_MODIFIER_MASK

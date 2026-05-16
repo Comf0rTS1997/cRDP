@@ -158,6 +158,8 @@ data class SessionUserSettings(
     val defaultCameraDeviceId: String? = null,
     /** Encode camera frames to H.264 client-side (recommended). */
     val cameraEncode: Boolean = true,
+    /** App-wide default for two-way plain-text clipboard sync (direct profiles only). */
+    val defaultClipboardSync: Boolean = true,
 )
 
 @Composable
@@ -468,7 +470,7 @@ private fun SessionScreen(
                     action = if (dragging) PointerAction.Move else PointerAction.Hover,
                     buttons = 0,
                     wheelDelta = 0f,
-                    hWheelDelta = 0f,
+                    wheelDeltaH = 0f,
                 ),
             )
             markInteraction()
@@ -493,7 +495,7 @@ private fun SessionScreen(
                             action = if (pressed) PointerAction.Down else PointerAction.Up,
                             buttons = id,
                             wheelDelta = 0f,
-                            hWheelDelta = 0f,
+                            wheelDeltaH = 0f,
                         ),
                     )
                 }
@@ -518,7 +520,7 @@ private fun SessionScreen(
                         // convention (positive = wheel rolling away from user / scroll-up),
                         // so pass through without flipping.
                         wheelDelta = vsc * 120f,
-                        hWheelDelta = hsc * 120f,
+                        wheelDeltaH = hsc * 120f,
                     ),
                 )
                 markInteraction()

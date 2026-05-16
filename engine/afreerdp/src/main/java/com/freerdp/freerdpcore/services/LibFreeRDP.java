@@ -156,6 +156,14 @@ public final class LibFreeRDP {
     public static boolean sendCursorEvent(long inst, int x, int y, int flags) {
         return freerdp_send_cursor_event(inst, x, y, flags);
     }
+
+    /**
+     * Forwards one multitouch contact to FreeRDP ({@code freerdp_client_handle_touch}).
+     * {@code flags} uses FreeRDP {@code FREERDP_TOUCH_*} values (see {@code AFreeRdpEngine}).
+     */
+    public static boolean sendTouchContact(long inst, int flags, int finger, int pressure, int x, int y) {
+        return freerdp_send_touch_contact(inst, flags, finger, pressure, x, y);
+    }
     public static boolean sendKeyEvent(long inst, int keycode, boolean down) {
         return freerdp_send_key_event(inst, keycode, down);
     }
@@ -196,6 +204,7 @@ public final class LibFreeRDP {
     private static native boolean freerdp_disconnect(long inst);
     private static native boolean freerdp_update_graphics(long inst, Bitmap bitmap, int x, int y, int w, int h);
     private static native boolean freerdp_send_cursor_event(long inst, int x, int y, int flags);
+    private static native boolean freerdp_send_touch_contact(long inst, int flags, int finger, int pressure, int x, int y);
     private static native boolean freerdp_send_key_event(long inst, int keycode, boolean down);
     private static native boolean freerdp_send_unicodekey_event(long inst, int keycode, boolean down);
     private static native boolean freerdp_send_clipboard_data(long inst, String data);

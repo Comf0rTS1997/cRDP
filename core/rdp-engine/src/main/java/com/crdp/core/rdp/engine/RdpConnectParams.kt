@@ -34,4 +34,6 @@ data class RdpConnectParams(
     val cameraDeviceId: String? = null,
     /** true = H.264 passthrough via MediaCodec; false = raw frames (server transcodes). */
     val cameraEncode: Boolean = true,
+    /** Plain-text clipboard sync with the remote session (direct FreeRDP engine only). */
+    val clipboardSyncEnabled: Boolean = true,
 )

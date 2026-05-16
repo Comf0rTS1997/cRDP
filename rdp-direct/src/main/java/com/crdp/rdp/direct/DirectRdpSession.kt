@@ -16,6 +16,7 @@ import com.crdp.core.rdp.engine.RenderOptions
 import com.crdp.core.rdp.input.KeyAction
 import com.crdp.core.rdp.input.KeyEventPayload
 import com.crdp.core.rdp.input.PointerEvent
+import com.crdp.core.rdp.input.WindowsVirtualKey
 import com.crdp.core.rdp.model.AudioMode
 import com.crdp.core.rdp.model.CameraMode
 import com.crdp.core.rdp.model.ConnectionProfile
@@ -133,6 +134,9 @@ class DirectRdpSession @Inject constructor(
         engine.resolveChallenge(id, response)
     }
 
+    override fun requestResolution(width: Int, height: Int, dpiScale: Int): Boolean =
+        engine.requestResolution(width, height, dpiScale)
+
     override fun onPointerEvent(event: PointerEvent) {
         engine.sendPointer(
             x = event.x.toInt(),
@@ -158,10 +162,18 @@ class DirectRdpSession @Inject constructor(
         sendEngineScanOrKey(event)
     }
 
-    /** Prefer Linux HID scan codes from hardware keyboards; fall back to Android keyCode. */
+    /**
+     * Translate the Android keyCode to a Windows VK, then hand it to the engine.
+     * FreeRDP's `freerdp_send_key_event` expects a Windows VK (it internally calls
+     * `GetVirtualScanCodeFromVirtualKeyCode(vk, 4)` to derive the RDP scancode).
+     * Drop unmapped keys silently — passing an unmapped Android keyCode through
+     * causes the VK table to misroute (e.g., Android KEYCODE_F4 = 134 collides with
+     * VK_MEDIA_PREV_TRACK, breaking Alt+F4).
+     */
     private fun sendEngineScanOrKey(event: KeyEventPayload) {
-        val code = if (event.scanCode != 0) event.scanCode else event.keyCode
-        engine.sendKey(scancode = code, action = event.action, meta = event.metaState)
+        val vk = WindowsVirtualKey.fromAndroidKeyCode(event.keyCode)
+        if (vk == 0) return
+        engine.sendKey(scancode = vk, action = event.action, meta = event.metaState)
     }
 
     private fun reconcileModifiers(from: Int, to: Int) {
@@ -170,12 +182,14 @@ class DirectRdpSession @Inject constructor(
         for (i in MODIFIER_ORDER.indices.reversed()) {
             val bit = MODIFIER_ORDER[i].first
             if (releaseBits and bit != 0) {
-                engine.sendKey(MODIFIER_ORDER[i].second, KeyAction.Up, 0)
+                val vk = WindowsVirtualKey.fromAndroidKeyCode(MODIFIER_ORDER[i].second)
+                if (vk != 0) engine.sendKey(vk, KeyAction.Up, 0)
             }
         }
         for ((bit, keyCode) in MODIFIER_ORDER) {
             if (pressBits and bit != 0) {
-                engine.sendKey(keyCode, KeyAction.Down, 0)
+                val vk = WindowsVirtualKey.fromAndroidKeyCode(keyCode)
+                if (vk != 0) engine.sendKey(vk, KeyAction.Down, 0)
             }
         }
     }

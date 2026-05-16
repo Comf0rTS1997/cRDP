@@ -44,6 +44,26 @@
                 android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
                 android:resource="@xml/usb_device_filter" />
         </activity>
+
+        <!--
+          Accessibility service used to intercept hardware-keyboard shortcuts
+          (Alt+F4, Win+L, Alt+Tab) before Samsung DeX / WindowManager consume
+          them. See KeyInterceptorService for the rationale; this is the
+          termux-x11 pattern. The service is bound on demand and only filters
+          while a session is active — no observation of other apps.
+        -->
+        <service
+            android:name=".KeyInterceptorService"
+            android:exported="true"
+            android:label="@string/accessibility_service_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
     </application>
 
 </manifest>

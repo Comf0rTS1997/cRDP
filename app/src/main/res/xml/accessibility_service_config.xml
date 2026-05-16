@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  cRDP key-interceptor accessibility service config.
+
+  canRequestFilterKeyEvents=true is the load-bearing line: it permits the
+  service to receive KeyEvent before the WindowManager's global shortcut
+  router. Without it the service can still bind, but Alt+F4 / Win+L / Alt+Tab
+  will be eaten by Samsung DeX before cRDP's Activity ever sees them.
+
+  accessibilityEventTypes is empty: we don't observe UI tree changes (which
+  would also bloat our scope in Play Store review). We only filter key events.
+
+  packageNames="@null" means the service is willing to receive events for any
+  package — important because we only ever fire while MainActivity is
+  foreground, but Android still wants the package list configured.
+-->
+<accessibility-service
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes=""
+    android:accessibilityFlags="flagRequestFilterKeyEvents"
+    android:canRetrieveWindowContent="false"
+    android:packageNames="@null"
+    android:canRequestFilterKeyEvents="true" />

@@ -31,4 +31,19 @@ interface RdpEngine {
 
     fun sendKey(scancode: Int, action: KeyAction, meta: Int)
     fun sendPointer(x: Int, y: Int, buttons: Int, action: PointerAction, wheel: Int, hWheel: Int = 0)
+
+    /**
+     * Ask the engine to renegotiate the remote desktop size on the existing session,
+     * without a reconnect. Implementations are expected to use the DisplayControl
+     * virtual channel (DispClientContext::SendMonitorLayout) or an equivalent.
+     *
+     * Returns `true` if the request was dispatched to the server; `false` when the
+     * engine has no live session, the channel is not negotiated, or the
+     * implementation simply does not support live resize (e.g. the stub engine).
+     * Callers should fall back to a full reconnect when `false` is returned.
+     *
+     * @param dpiScale percent (100..500). When zero, the server's last-known scale
+     *   is preserved on its side.
+     */
+    fun requestResolution(width: Int, height: Int, dpiScale: Int = 0): Boolean = false
 }

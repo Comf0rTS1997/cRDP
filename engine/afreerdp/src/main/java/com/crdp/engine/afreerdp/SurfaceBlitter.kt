@@ -70,37 +70,61 @@ internal class SurfaceBlitter {
         h: Int,
         refreshHz: Float = 60f,
         options: RenderOptions = RenderOptions(),
-    ) = lock.withLock {
-        this.surface = surface
-        surfaceWidth = w
-        surfaceHeight = h
-        minFrameIntervalNanos = if (refreshHz > 0f) (1_000_000_000.0 / refreshHz).toLong()
-                                else DEFAULT_FRAME_INTERVAL_NANOS
-        lastFlushNanos = 0L
-        invalidateTransform()
+    ) {
+        val needFullRepaint: Boolean
+        lock.withLock {
+            this.surface = surface
+            surfaceWidth = w
+            surfaceHeight = h
+            minFrameIntervalNanos = if (refreshHz > 0f) (1_000_000_000.0 / refreshHz).toLong()
+                                    else DEFAULT_FRAME_INTERVAL_NANOS
+            lastFlushNanos = 0L
+            invalidateTransform()
 
-        val resolved = when (options.backend) {
-            RenderBackend.Auto -> RenderBackend.HwuiCanvas
-            RenderBackend.HwuiCanvas -> RenderBackend.HwuiCanvas
-            RenderBackend.Gles -> RenderBackend.Gles
+            val resolved = when (options.backend) {
+                RenderBackend.Auto -> RenderBackend.HwuiCanvas
+                RenderBackend.HwuiCanvas -> RenderBackend.HwuiCanvas
+                RenderBackend.Gles -> RenderBackend.Gles
+            }
+            sampling = options.sampling
+
+            // If we're switching backends, tear down the previous renderer and bring
+            // up the new one. Bitmap is shared between backends; don't recycle here.
+            if (resolved != backend) {
+                val prevGl = glRenderer
+                glRenderer = null
+                prevGl?.release()
+            }
+            backend = resolved
+
+            if (resolved == RenderBackend.Gles) {
+                val gl = glRenderer ?: GlSurfaceRenderer().also { glRenderer = it }
+                bitmap?.let(gl::adoptBitmap)
+                gl.attach(surface, w, h, sampling, refreshHz)
+            } else {
+                glRenderer?.setSampling(sampling)
+            }
+
+            // Surface rotation / DeX resize hands us a fresh Surface that is fully
+            // black until the next FreeRDP graphics update lands. Mark the whole
+            // existing bitmap dirty so the next flushDirty paints it end-to-end —
+            // otherwise half the surface stays black until the user causes a
+            // remote-side redraw.
+            val bmp = bitmap
+            if (bmp != null && backend == RenderBackend.HwuiCanvas) {
+                dirtyLeft = 0
+                dirtyTop = 0
+                dirtyRight = bmp.width
+                dirtyBottom = bmp.height
+                needFullRepaint = true
+            } else {
+                needFullRepaint = false
+            }
         }
-        sampling = options.sampling
-
-        // If we're switching backends, tear down the previous renderer and bring
-        // up the new one. Bitmap is shared between backends; don't recycle here.
-        if (resolved != backend) {
-            val prevGl = glRenderer
-            glRenderer = null
-            prevGl?.release()
-        }
-        backend = resolved
-
-        if (resolved == RenderBackend.Gles) {
-            val gl = glRenderer ?: GlSurfaceRenderer().also { glRenderer = it }
-            bitmap?.let(gl::adoptBitmap)
-            gl.attach(surface, w, h, sampling, refreshHz)
-        } else {
-            glRenderer?.setSampling(sampling)
+        // Flush outside the lock; flushHwui acquires it briefly itself and the
+        // actual canvas draw must run unlocked (lockHardwareCanvas blocks).
+        if (needFullRepaint) {
+            flushDirty()
         }
     }
 

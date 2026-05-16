@@ -47,6 +47,7 @@ import com.crdp.app.prefs.RenderSamplingOptions
 import com.crdp.core.rdp.engine.RenderBackend
 import com.crdp.core.rdp.engine.RenderOptions
 import com.crdp.core.rdp.engine.SamplingMode
+import com.crdp.feature.session.KeyEventHost
 import com.crdp.feature.session.SessionRoute
 import com.crdp.feature.session.SessionUserSettings
 import com.crdp.feature.session.SessionViewModel
@@ -70,7 +71,140 @@ private suspend fun verifyBiometricForProfile(
 }
 
 @AndroidEntryPoint
-class MainActivity : FragmentActivity() {
+class MainActivity : FragmentActivity(), KeyEventHost {
+
+    /**
+     * Per-Activity key sink the session screen registers while connected.
+     * Intercepts `KeyEvent`s before the IME and View focus system get a chance
+     * to swallow them — Alt+F4 in particular never reaches a Compose
+     * `onPreviewKeyEvent` handler when an EditText steals focus, but does land
+     * here. Return `true` to consume.
+     *
+     * Mirrors the dispatchKeyEvent override pattern used by termux-x11's
+     * `MainActivity` (LorieView.dispatchKeyEvent). The hook is set/cleared in
+     * `SessionScreen`'s pointer-capture `DisposableEffect`.
+     */
+    @Volatile private var keyEventHook: ((android.view.KeyEvent) -> Boolean)? = null
+
+    /**
+     * Idempotency guard for [SamsungDexUtils.dexMetaKeyCapture]. Compose
+     * recomposes the session screen frequently and each one calls
+     * setKeyEventHook(non-null) again; without this we'd churn the Samsung
+     * meta-key capture state on every recomposition, which the input
+     * dispatcher seems to react to by occasionally dropping keys.
+     */
+    private var dexCaptureEnabled = false
+
+    override fun setKeyEventHook(hook: ((android.view.KeyEvent) -> Boolean)?) {
+        keyEventHook = hook
+        // Notify the accessibility filter that its enable/disable state may
+        // have flipped (session connected/disconnected → intercept on/off).
+        KeyInterceptorService.recheck()
+        // DeX-specific: AccessibilityService key filtering does NOT cover
+        // Samsung's meta-key shortcuts (Win, Alt+F4, Alt+Tab). The Samsung
+        // private API SemWindowManager.requestMetaKeyEvent is the only path
+        // that routes those to the Activity. Toggle in lockstep with the
+        // session hook, but only on state change (see [dexCaptureEnabled]).
+        val shouldCapture = hook != null
+        if (shouldCapture != dexCaptureEnabled) {
+            SamsungDexUtils.dexMetaKeyCapture(this, shouldCapture)
+            dexCaptureEnabled = shouldCapture
+        }
+    }
+
+    /**
+     * True when the AccessibilityService should be filtering keys — i.e.
+     * a session is live AND the activity is foreground. Mirrors termux-x11's
+     * `MainActivity.shouldInterceptKeys` semantics.
+     */
+    fun shouldInterceptKeys(): Boolean = keyEventHook != null
+
+    /**
+     * Called by [KeyInterceptorService.onKeyEvent] with events that arrive
+     * BEFORE the WindowManager's shortcut router (Alt+F4 etc.). Forwards to
+     * the registered session hook; returns `true` if consumed so the system
+     * drops the event entirely.
+     */
+    fun dispatchInterceptedKey(event: android.view.KeyEvent): Boolean {
+        val hook = keyEventHook ?: return false
+        return hook(event)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        activeInstance = this
+        KeyInterceptorService.recheck()
+    }
+
+    override fun onPause() {
+        // Release the filter when we lose foreground so other apps get normal
+        // key dispatch.
+        if (activeInstance === this) activeInstance = null
+        KeyInterceptorService.recheck()
+        super.onPause()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        KeyInterceptorService.recheck()
+    }
+
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        val hook = keyEventHook
+        android.util.Log.d(
+            "cRdpKey",
+            "Activity.dispatchKeyEvent action=${event.action} kc=${event.keyCode} " +
+                "meta=0x${Integer.toHexString(event.metaState)} src=0x${Integer.toHexString(event.source)} " +
+                "hookSet=${hook != null}",
+        )
+        if (hook != null && hook(event)) {
+            android.util.Log.d("cRdpKey", "  → consumed by hook")
+            return true
+        }
+        val result = super.dispatchKeyEvent(event)
+        android.util.Log.d("cRdpKey", "  → super=$result")
+        return result
+    }
+
+    /**
+     * Window-level shortcut dispatch. Fires EARLIER than `dispatchKeyEvent` for
+     * keys with a modifier (Alt/Ctrl/Meta) — this is where Samsung DeX's
+     * "Alt+F4 closes the foreground app" lives, and where stock Android routes
+     * Alt+Tab / Win+L. By consuming here, we keep the shortcut from reaching
+     * the WindowManager's global shortcut router.
+     */
+    override fun dispatchKeyShortcutEvent(event: android.view.KeyEvent): Boolean {
+        val hook = keyEventHook
+        android.util.Log.d(
+            "cRdpKey",
+            "Activity.dispatchKeyShortcut action=${event.action} kc=${event.keyCode} " +
+                "meta=0x${Integer.toHexString(event.metaState)} hookSet=${hook != null}",
+        )
+        if (hook != null && hook(event)) {
+            android.util.Log.d("cRdpKey", "  → shortcut consumed by hook")
+            return true
+        }
+        return super.dispatchKeyShortcutEvent(event)
+    }
+
+    /**
+     * Stock Activity.onKeyDown handles Back / Menu / Volume / Power. We
+     * intentionally never let it run for any session-forwarded key — but those
+     * are already consumed in dispatchKeyEvent above. This override exists
+     * solely as a hard backstop if some code path manages to reach onKeyDown
+     * without dispatchKeyEvent first (e.g., key prefilters added by Samsung).
+     */
+    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean {
+        val hook = keyEventHook
+        if (hook != null && hook(event)) return true
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: android.view.KeyEvent): Boolean {
+        val hook = keyEventHook
+        if (hook != null && hook(event)) return true
+        return super.onKeyUp(keyCode, event)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -305,5 +439,17 @@ class MainActivity : FragmentActivity() {
                 }
             }
         }
+    }
+
+    companion object {
+        /**
+         * Set in onResume / cleared in onPause. `KeyInterceptorService` reads
+         * this to know which (if any) MainActivity should currently receive
+         * filtered key events. `@Volatile` so the binder thread sees the
+         * latest value without a memory barrier on every onKeyEvent.
+         */
+        @JvmStatic
+        @Volatile var activeInstance: MainActivity? = null
+            private set
     }
 }

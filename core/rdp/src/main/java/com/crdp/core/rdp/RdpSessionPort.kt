@@ -42,6 +42,13 @@ interface RdpSessionPort {
     fun detachSurface() {}
 
     fun resolveChallenge(id: String, response: ChallengeResponse) {}
+
+    /**
+     * Live resize. Returns true if the underlying engine accepted the request and
+     * dispatched a DisplayControl monitor-layout update to the server; false when
+     * the transport cannot resize on the fly (caller should fall back to reconnect).
+     */
+    fun requestResolution(width: Int, height: Int, dpiScale: Int = 0): Boolean = false
 }
 
 private val EmptyChallenges: SharedFlow<EngineChallenge> =

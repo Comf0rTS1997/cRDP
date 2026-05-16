@@ -101,6 +101,7 @@ import com.crdp.core.rdp.model.GatewayConnectionProfile
 import com.crdp.core.rdp.model.SessionState
 import android.Manifest
 import android.content.pm.PackageManager
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
@@ -170,10 +171,17 @@ fun SessionRoute(
     val windowW = with(density) { config.screenWidthDp.dp.roundToPx() }
     val windowH = with(density) { config.screenHeightDp.dp.roundToPx() }
 
-    // Samsung DeX advertises itself by setting UI_MODE_TYPE_DESK on the active Configuration.
-    // Recompose-time read is enough because we depend on Configuration via LocalConfiguration.
-    val inDexMode = (config.uiMode and android.content.res.Configuration.UI_MODE_TYPE_MASK) ==
-        android.content.res.Configuration.UI_MODE_TYPE_DESK
+    // Legacy Samsung DeX sets UI_MODE_TYPE_DESK. Modern Samsung DeX (One UI 8 / Android 15+)
+    // uses AOSP Desktop Windowing — the app window lives on a non-primary display
+    // (FLAG_EXTERNAL_DEX_HOSTING + WINDOWING_MODE_FREEFORM) and UI_MODE_TYPE_DESK is never set.
+    // Detect both: legacy via uiMode mask, modern via display id != DEFAULT_DISPLAY.
+    val view = LocalView.current
+    val inDexMode = run {
+        val legacyDex = (config.uiMode and android.content.res.Configuration.UI_MODE_TYPE_MASK) ==
+            android.content.res.Configuration.UI_MODE_TYPE_DESK
+        val displayId = view.display?.displayId ?: android.view.Display.DEFAULT_DISPLAY
+        legacyDex || displayId != android.view.Display.DEFAULT_DISPLAY
+    }
     val effectiveDpi = if (inDexMode) settings.dexDpiScale else settings.defaultDpiScale
 
     // Sync VM with the current effective scale before the first connect, and on every
@@ -366,6 +374,9 @@ private fun SessionScreen(
     // Use an explicit MutableState so the AndroidView factory lambda captures the reference.
     val surfaceDims = remember { mutableStateOf(Pair(0, 0)) }
     val (surfaceW, surfaceH) = surfaceDims.value
+    // Reference to the focusable SurfaceView that owns pointer capture and key
+    // pre-IME dispatch. Populated by the AndroidView factory below.
+    val rdpSurfaceRef = remember { mutableStateOf<RdpSurfaceView?>(null) }
 
     val profile = sessionReady.profile
     val rdpW = profileWidth(profile)
@@ -517,9 +528,9 @@ private fun SessionScreen(
         return true
     }
 
-    LaunchedEffect(Unit) {
-        focusRequester.requestFocus()
-    }
+    // Focus is owned by RdpSurfaceView (via its onAttachedToWindow + captureOnFocus
+    // wiring). Don't pull it onto the Compose root — see the focusable() comment
+    // on BoxWithConstraints below.
 
     LaunchedEffect(isFullscreen) {
         val activity = context as? Activity ?: return@LaunchedEffect
@@ -540,8 +551,12 @@ private fun SessionScreen(
             val activity = context as? Activity ?: return@onDispose
             val controller = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
             controller.show(WindowInsetsCompat.Type.systemBars())
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && view.hasPointerCapture()) {
-                runCatching { view.releasePointerCapture() }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                runCatching {
+                    if (view.hasPointerCapture()) view.releasePointerCapture()
+                    val surf = rdpSurfaceRef.value
+                    if (surf?.hasPointerCapture() == true) surf.releasePointerCapture()
+                }
             }
         }
     }
@@ -558,6 +573,63 @@ private fun SessionScreen(
     //  - Compose pointerInput below: source-routed to MOUSE for the button-press
     //    fallback on devices without pointer capture support.
     val sessionConnected = sessionState is SessionState.Connected
+
+    // Stable wrapper closing over `port`/`transform`/etc. — called both from the
+    // Activity-level dispatchKeyEvent hook (the primary path, which sees keys
+    // BEFORE the IME/focus system can steal them — Alt+F4 falls in this bucket)
+    // and from Compose's onPreviewKeyEvent (a fallback in case the activity is
+    // not the bundled MainActivity, e.g., embedded host).
+    //
+    // Special case: ESC while pointer capture is active releases capture and is
+    // NOT forwarded to the server, giving the user a way out of the captured
+    // session without a hardware Back/Home (which Android disallows intercepting).
+    val escConsumedRef = remember { mutableStateOf(false) }
+    fun handleSessionKeyEvent(native: AndroidKeyEvent): Boolean {
+        if (!sessionConnected) return false
+        val action = when (native.action) {
+            AndroidKeyEvent.ACTION_DOWN -> KeyAction.Down
+            AndroidKeyEvent.ACTION_UP -> KeyAction.Up
+            else -> return false
+        }
+        // ESC escape-hatch: release capture and swallow both edges of the keystroke
+        // so the remote desktop doesn't see a stray Escape.
+        val rdpSurface = rdpSurfaceRef.value
+        val captureActive = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            (rdpSurface?.hasPointerCapture() == true || view.hasPointerCapture())
+        if (native.keyCode == AndroidKeyEvent.KEYCODE_ESCAPE &&
+            (captureActive || escConsumedRef.value)
+        ) {
+            if (action == KeyAction.Down) {
+                escConsumedRef.value = true
+                // Stop the SurfaceView from immediately re-grabbing capture on focus.
+                rdpSurface?.captureOnFocus = false
+                runCatching { rdpSurface?.releasePointerCapture() }
+                runCatching { view.releasePointerCapture() }
+                scope.launch {
+                    snackbarHostState.showSnackbar(
+                        "Pointer released. Tap the surface to recapture.",
+                    )
+                }
+            } else if (action == KeyAction.Up) {
+                escConsumedRef.value = false
+            }
+            return true
+        }
+        if (action == KeyAction.Down) {
+            haptic(HapticFeedbackConstants.KEYBOARD_TAP)
+        }
+        markInteraction()
+        port.onKeyEvent(
+            KeyEventPayload(
+                keyCode = native.keyCode,
+                metaState = native.metaState,
+                action = action,
+                scanCode = native.scanCode,
+            ),
+        )
+        return true
+    }
+
     // Key on `transform` too: when the surface resizes (DeX, rotation), the captured
     // mouse-motion handler closes over the new transform on the next effect run.
     DisposableEffect(sessionConnected, view, transform) {
@@ -573,36 +645,40 @@ private fun SessionScreen(
         }
         view.setOnGenericMotionListener(genericListener)
 
-        var capturedListener: android.view.View.OnCapturedPointerListener? = null
-        var captureRequest: Runnable? = null
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && sessionConnected) {
-            capturedListener = android.view.View.OnCapturedPointerListener { _, ev ->
-                handleHardwareMouseMotion(ev, captured = true)
-            }
-            view.setOnCapturedPointerListener(capturedListener)
-            captureRequest = Runnable {
-                runCatching {
-                    if (view.isAttachedToWindow) view.requestPointerCapture()
-                }
-            }
-            view.post(captureRequest)
+        // Activity-level key sink. This is the termux-x11 pattern: override
+        // dispatchKeyEvent on the host Activity so the IME / window focus
+        // system can't swallow keystrokes that the RDP server needs (Alt+F4,
+        // Alt+Tab, Win+R, function keys). Plain Compose `onPreviewKeyEvent`
+        // only fires when the composable has key focus, which is fragile in
+        // the presence of pointer capture and surface focus shifts.
+        val keyHost = context as? KeyEventHost
+        if (keyHost != null && sessionConnected) {
+            keyHost.setKeyEventHook { ev -> handleSessionKeyEvent(ev) }
         }
+
+        // Pointer capture + dispatchKeyEventPreIme now live on the RdpSurfaceView
+        // itself (see its onWindowFocusChanged + captureOnFocus). The previous
+        // path requested capture on LocalView, which the Compose root doesn't
+        // reliably hold across immersive system-bar transitions on Samsung DeX.
 
         onDispose {
             view.setOnGenericMotionListener(null)
-            if (capturedListener != null) {
-                view.setOnCapturedPointerListener(null)
-            }
-            if (captureRequest != null) {
-                view.removeCallbacks(captureRequest)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    runCatching {
-                        if (view.hasPointerCapture()) view.releasePointerCapture()
-                    }
+            keyHost?.setKeyEventHook(null)
+            val surf = rdpSurfaceRef.value
+            if (surf != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                surf.captureOnFocus = false
+                runCatching {
+                    if (surf.hasPointerCapture()) surf.releasePointerCapture()
                 }
             }
         }
     }
+
+    // Consume the system Back gesture/key while a session is live so it goes to
+    // the remote desktop instead of popping the session screen. Disconnect is
+    // available via the dock menu. onPreviewKeyEvent already forwards the keystroke
+    // before BackHandler fires, so the server sees the KEYCODE_BACK event.
+    BackHandler(enabled = sessionConnected) { /* swallow */ }
 
     LaunchedEffect(settings.autoDisconnectIdle) {
         if (!settings.autoDisconnectIdle) return@LaunchedEffect
@@ -620,31 +696,12 @@ private fun SessionScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0xFF121212))
-            .focusRequester(focusRequester)
-            .focusable()
-            .onPreviewKeyEvent { ev: KeyEvent ->
-                val native = ev.nativeKeyEvent
-                val action = when (native.action) {
-                    AndroidKeyEvent.ACTION_DOWN -> KeyAction.Down
-                    AndroidKeyEvent.ACTION_UP -> KeyAction.Up
-                    else -> null
-                }
-                if (action != null) {
-                    if (action == KeyAction.Down) {
-                        haptic(HapticFeedbackConstants.KEYBOARD_TAP)
-                    }
-                    markInteraction()
-                    port.onKeyEvent(
-                        KeyEventPayload(
-                            keyCode = native.keyCode,
-                            metaState = native.metaState,
-                            action = action,
-                            scanCode = native.scanCode,
-                        ),
-                    )
-                }
-                true
-            }
+            // Intentionally NOT .focusable() — we want RdpSurfaceView (added below
+            // via AndroidView) to win key focus so its dispatchKeyEventPreIme and
+            // pointer-capture lifecycle fire. Activity-level dispatchKeyEvent
+            // covers the keyboard fallback. A focusable Compose root steals focus
+            // away from the SurfaceView, breaking pointer capture in immersive
+            // fullscreen (no system bars to trigger a focus regain → no recovery).
             .pointerInput(port, inputMode, transform) {
                 awaitPointerEventScope {
                     while (true) {
@@ -667,7 +724,21 @@ private fun SessionScreen(
                             }
 
                             // Any touch reaching the RDP surface collapses an edge-expanded dock.
-                            if (rawAction == PointerAction.Down) isEdgeExpandedState.value = false
+                            // It also re-engages pointer capture if a prior ESC released it
+                            // (this is the "tap surface to recapture" cue from the snackbar).
+                            if (rawAction == PointerAction.Down) {
+                                isEdgeExpandedState.value = false
+                                val surf = rdpSurfaceRef.value
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                                    sessionConnected &&
+                                    surf != null &&
+                                    !surf.hasPointerCapture()
+                                ) {
+                                    surf.captureOnFocus = true
+                                    surf.requestFocus()
+                                    runCatching { surf.requestPointerCapture() }
+                                }
+                            }
 
                             when (inputMode) {
                                 InputMode.Trackpad -> {
@@ -824,9 +895,40 @@ private fun SessionScreen(
             dockBoundsRef.value = Rect(renderDockX, renderDockY, renderDockX + currentDockWPx, renderDockY + dockHPx)
         }
 
+        // Re-engage pointer capture when the user clicks/taps the surface
+        // after an ESC release. Called from RdpSurfaceView itself (touch
+        // events and ACTION_BUTTON_PRESS), so it fires for mouse users on
+        // DeX who have no way to reach the phone touchscreen. Skips clicks
+        // that landed inside the floating dock — otherwise the dock would
+        // be impossible to interact with once capture is released, since
+        // the SurfaceView sits beneath it and consumes the down event
+        // before any dock pointerInput can react.
+        val reengageCapture: (Float, Float) -> Unit = { x, y ->
+            val bounds = dockBoundsRef.value
+            val inDock = bounds != null && bounds.contains(androidx.compose.ui.geometry.Offset(x, y))
+            if (!inDock) {
+                val surf = rdpSurfaceRef.value
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                    surf != null &&
+                    !surf.hasPointerCapture()
+                ) {
+                    surf.captureOnFocus = true
+                    surf.requestFocus()
+                    runCatching { surf.requestPointerCapture() }
+                }
+            }
+        }
+
         AndroidView(
             factory = { ctx ->
-                SurfaceView(ctx).apply {
+                RdpSurfaceView(ctx).apply {
+                    rdpSurfaceRef.value = this
+                    captureOnFocus = true
+                    onKeyIntercept = { ev -> handleSessionKeyEvent(ev) }
+                    onSurfaceDown = reengageCapture
+                    setCapturedPointerCallback { ev ->
+                        handleHardwareMouseMotion(ev, captured = true)
+                    }
                     holder.addCallback(
                         object : SurfaceHolder.Callback {
                             override fun surfaceCreated(holder: SurfaceHolder) {}
@@ -851,6 +953,32 @@ private fun SessionScreen(
                             }
                         },
                     )
+                }
+            },
+            update = { surfaceView ->
+                // Keep callbacks fresh across recompositions so they close over
+                // the latest `transform`, `sessionConnected`, etc.
+                val wasCaptureOnFocus = surfaceView.captureOnFocus
+                surfaceView.captureOnFocus = sessionConnected
+                surfaceView.onKeyIntercept = { ev -> handleSessionKeyEvent(ev) }
+                surfaceView.onSurfaceDown = reengageCapture
+                surfaceView.setCapturedPointerCallback { ev ->
+                    handleHardwareMouseMotion(ev, captured = true)
+                }
+                // When sessionConnected flips false→true, captureOnFocus is
+                // now true but neither onAttachedToWindow nor onWindowFocusChanged
+                // refires (View is already attached and focused). Manually kick
+                // a capture request here so the mouse starts working immediately
+                // on connect — without this, the user has to nudge the phone
+                // touchscreen to coax DeX into engaging capture.
+                if (sessionConnected && !wasCaptureOnFocus &&
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                    !surfaceView.hasPointerCapture()
+                ) {
+                    surfaceView.requestFocus()
+                    surfaceView.post {
+                        runCatching { surfaceView.requestPointerCapture() }
+                    }
                 }
             },
             modifier = Modifier.fillMaxSize(),

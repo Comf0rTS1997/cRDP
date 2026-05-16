@@ -166,6 +166,22 @@ public final class LibFreeRDP {
         return freerdp_send_clipboard_data(inst, data);
     }
     public static String version() { return freerdp_get_version(); }
+    /**
+     * Push a new desktop size to the connected server using DisplayControl
+     * (MS-RDPEDISP). Returns false if no session is active, the disp DVC didn't
+     * come up, the server doesn't advertise DisplayControl, or the JNI symbol is
+     * unavailable in this build of libfreerdp-android.so.
+     *
+     * dpiScale is a percent in [100, 500]; pass 0 to keep the server's last value.
+     */
+    public static boolean sendMonitorLayout(long inst, int width, int height, int dpiScale) {
+        try {
+            return freerdp_send_monitor_layout(inst, width, height, dpiScale);
+        } catch (UnsatisfiedLinkError e) {
+            // Older libfreerdp-android.so without the disp JNI export.
+            return false;
+        }
+    }
 
     // ────── native declarations (FQN must match libfreerdp-android.so symbols) ─
     private static native boolean freerdp_has_h264();
@@ -183,6 +199,7 @@ public final class LibFreeRDP {
     private static native boolean freerdp_send_key_event(long inst, int keycode, boolean down);
     private static native boolean freerdp_send_unicodekey_event(long inst, int keycode, boolean down);
     private static native boolean freerdp_send_clipboard_data(long inst, String data);
+    private static native boolean freerdp_send_monitor_layout(long inst, int width, int height, int dpiScale);
     private static native String  freerdp_get_last_error_string(long inst);
 
     // ────── callbacks invoked from JNI ─────────────────────────────────────────

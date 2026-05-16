@@ -18,6 +18,7 @@
 
 #include <freerdp/freerdp.h>
 #include <freerdp/client/cliprdr.h>
+#include <freerdp/client/disp.h>
 
 #include "android_event.h"
 
@@ -38,6 +39,11 @@ typedef struct
 	CLIPRDR_FORMAT* serverFormats;
 	CliprdrClientContext* cliprdr;
 	UINT32 clipboardCapabilities;
+
+	/* MS-RDPEDISP — populated when the disp DVC is negotiated. NULL until
+	 * android_OnChannelConnectedEventHandler sees DISP_DVC_CHANNEL_NAME. The
+	 * sendMonitorLayout JNI export uses this to push live resolution updates. */
+	DispClientContext* disp;
 } androidContext;
 
 #endif /* FREERDP_CLIENT_ANDROID_FREERDP_H */

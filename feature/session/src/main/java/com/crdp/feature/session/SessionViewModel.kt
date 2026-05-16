@@ -328,7 +328,8 @@ class SessionViewModel @Inject constructor(
         storedWindowW = w
         storedWindowH = h
 
-        // Already connected with auto-resolution: reconnect at the new size.
+        // Already connected with auto-resolution: try a live DisplayControl resize
+        // first; only fall back to a full reconnect if the engine can't do it.
         val ready = _ready.value
         if (ready != null) {
             val p = ready.profile
@@ -345,7 +346,24 @@ class SessionViewModel @Inject constructor(
                 is GatewayConnectionProfile -> p.height
             }
             if (isAuto && (curW != w || curH != h)) {
-                reconnect(ready, w, h)
+                val scale = when (p) {
+                    is DirectConnectionProfile -> p.desktopScaleFactor
+                    is GatewayConnectionProfile -> p.desktopScaleFactor
+                }
+                val live = runCatching {
+                    ready.port.requestResolution(w, h, scale)
+                }.getOrDefault(false)
+                if (live) {
+                    // Update the cached profile size in place so the UI's RDP→screen
+                    // transform follows the server's new resolution. No reconnect.
+                    val resized = when (p) {
+                        is DirectConnectionProfile -> p.copy(width = w, height = h)
+                        is GatewayConnectionProfile -> p.copy(width = w, height = h)
+                    }
+                    _ready.value = SessionReady(resized, ready.port)
+                } else {
+                    reconnect(ready, w, h)
+                }
             }
             return
         }

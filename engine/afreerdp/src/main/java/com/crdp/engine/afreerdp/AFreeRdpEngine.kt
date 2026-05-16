@@ -195,6 +195,16 @@ class AFreeRdpEngine @Inject constructor(
         LibFreeRDP.sendKeyEvent(inst, scancode, action == KeyAction.Down)
     }
 
+    override fun requestResolution(width: Int, height: Int, dpiScale: Int): Boolean {
+        val inst = instance
+        if (inst == 0L) return false
+        if (_state.value !is EngineState.Connected) return false
+        if (width <= 0 || height <= 0) return false
+        return runCatching {
+            LibFreeRDP.sendMonitorLayout(inst, width, height, dpiScale.coerceIn(0, 500))
+        }.getOrDefault(false)
+    }
+
     override fun sendPointer(x: Int, y: Int, buttons: Int, action: PointerAction, wheel: Int, hWheel: Int) {
         val inst = instance
         if (inst == 0L) return
@@ -488,6 +498,12 @@ class AFreeRdpEngine @Inject constructor(
         }
         args += "/gdi:hw"
         args += "/network:lan"
+        // Negotiate the DisplayControl DVC so requestResolution() can push a new
+        // monitor layout mid-session. The native side also wires the channel in
+        // android_OnChannelConnectedEventHandler when libfreerdp-android is rebuilt;
+        // omitting this flag leaves DispClientContext null and the live-resize
+        // attempt simply returns false (caller falls back to reconnect).
+        args += "/dynamic-resolution"
         val qualityTok = when (p.audioQuality) {
             com.crdp.core.rdp.engine.AudioQuality.Dynamic -> "dynamic"
             com.crdp.core.rdp.engine.AudioQuality.Medium -> "medium"

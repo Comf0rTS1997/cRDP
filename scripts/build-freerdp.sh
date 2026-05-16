@@ -148,7 +148,8 @@ if [ -f "$CPP_DIR/CMakeLists.txt" ]; then
             -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK/build/cmake/android.toolchain.cmake" \
             -DCMAKE_BUILD_TYPE=Release \
             -DANDROID_ABI="$abi" \
-            -DWITH_CLIENT_CHANNELS=ON
+            -DWITH_CLIENT_CHANNELS=ON \
+            -DCMAKE_SHARED_LINKER_FLAGS="-Wl,-z,max-page-size=16384"
         "$CMAKE_PROGRAM" --build "$build_dir" -- -j"$(nproc 2>/dev/null || echo 4)"
         cp -v "$build_dir/libfreerdp-android.so" "$FREERDP_DEFAULT_OUT/$abi/"
     done

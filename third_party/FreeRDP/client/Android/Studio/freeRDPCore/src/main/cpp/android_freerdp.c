@@ -32,6 +32,8 @@
 #include <freerdp/client/rdpei.h>
 #include <freerdp/client/rdpgfx.h>
 #include <freerdp/client/cliprdr.h>
+#include <freerdp/client/disp.h>
+#include <freerdp/channels/disp.h>
 #include <freerdp/codec/h264.h>
 #include <freerdp/channels/channels.h>
 #include <freerdp/client/channels.h>
@@ -77,6 +79,14 @@ static void android_OnChannelConnectedEventHandler(void* context,
 	{
 		android_cliprdr_init(afc, (CliprdrClientContext*)e->pInterface);
 	}
+	else if (strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0)
+	{
+		/* Capture the DispClientContext so the JNI sendMonitorLayout export
+		 * can push live resolution updates without going through the full
+		 * channel registry on every call. The pointer is owned by the channel
+		 * client and remains valid until the matching Disconnected event. */
+		afc->disp = (DispClientContext*)e->pInterface;
+	}
 	else
 		freerdp_client_OnChannelConnectedEventHandler(context, e);
 }
@@ -99,6 +109,10 @@ static void android_OnChannelDisconnectedEventHandler(void* context,
 	if (strcmp(e->name, CLIPRDR_SVC_CHANNEL_NAME) == 0)
 	{
 		android_cliprdr_uninit(afc, (CliprdrClientContext*)e->pInterface);
+	}
+	else if (strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0)
+	{
+		afc->disp = NULL;
 	}
 	else
 		freerdp_client_OnChannelDisconnectedEventHandler(context, e);
@@ -1038,6 +1052,74 @@ out_fail:
 		(*env)->ReleaseStringUTFChars(env, jdata, data);
 
 	return ret;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1monitor_1layout(JNIEnv* env,
+                                                                                jclass cls,
+                                                                                jlong instance,
+                                                                                jint width,
+                                                                                jint height,
+                                                                                jint dpiScale)
+{
+	freerdp* inst = (freerdp*)instance;
+	androidContext* afc;
+	DispClientContext* disp;
+	DISPLAY_CONTROL_MONITOR_LAYOUT layout;
+	UINT rc;
+
+	WINPR_UNUSED(env);
+	WINPR_UNUSED(cls);
+
+	if (!inst || !inst->context)
+		return JNI_FALSE;
+
+	afc = (androidContext*)inst->context;
+	disp = afc->disp;
+	if (!disp || !disp->SendMonitorLayout)
+		return JNI_FALSE;
+
+	/* MS-RDPEDISP §2.2.2.2 — server rejects dimensions outside this range. */
+	if (width < DISPLAY_CONTROL_MIN_MONITOR_WIDTH || width > DISPLAY_CONTROL_MAX_MONITOR_WIDTH)
+		return JNI_FALSE;
+	if (height < DISPLAY_CONTROL_MIN_MONITOR_HEIGHT || height > DISPLAY_CONTROL_MAX_MONITOR_HEIGHT)
+		return JNI_FALSE;
+	/* Width must be even — server rejects odd values per MS-RDPEDISP. */
+	if (width & 1)
+		width -= 1;
+
+	memset(&layout, 0, sizeof(layout));
+	layout.Flags = DISPLAY_CONTROL_MONITOR_PRIMARY;
+	layout.Left = 0;
+	layout.Top = 0;
+	layout.Width = (UINT32)width;
+	layout.Height = (UINT32)height;
+	/* Physical size is informational; pin to a sensible mid-range value so
+	 * Windows doesn't reject the layout. Pixels-per-mm is unspecified by the
+	 * spec — the server scales it back out to logical DPI. */
+	layout.PhysicalWidth = 300;
+	layout.PhysicalHeight = 200;
+	layout.Orientation = ORIENTATION_LANDSCAPE;
+
+	if (dpiScale >= 100 && dpiScale <= 500)
+	{
+		layout.DesktopScaleFactor = (UINT32)dpiScale;
+		layout.DeviceScaleFactor = (dpiScale < 120) ? 100u : (dpiScale < 160 ? 140u : 180u);
+	}
+	else
+	{
+		layout.DesktopScaleFactor = 100;
+		layout.DeviceScaleFactor = 100;
+	}
+
+	rc = disp->SendMonitorLayout(disp, 1, &layout);
+	if (rc != CHANNEL_RC_OK)
+	{
+		WLog_WARN(TAG, "SendMonitorLayout failed: 0x%08" PRIX32, rc);
+		return JNI_FALSE;
+	}
+	WLog_DBG(TAG, "SendMonitorLayout(%dx%d, dpi=%d) ok", (int)width, (int)height, (int)dpiScale);
+	return JNI_TRUE;
 }
 
 JNIEXPORT jstring JNICALL

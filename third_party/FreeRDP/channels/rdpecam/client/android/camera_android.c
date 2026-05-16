@@ -21,6 +21,25 @@
 
 CamAndroidHal* g_cam_android_hal = NULL;
 
+/* Activity display rotation, in degrees (0/90/180/270). Read at capture_start
+ * to compute sensor→display rotation. -1 means "not set" — capture will fall
+ * back to 0 (treat as portrait). Stored as a plain int with atomic ops via
+ * gcc/clang builtins; we don't need full pthread mutex here. */
+static volatile int g_cam_display_rotation_deg = 0;
+
+void cam_android_set_display_rotation(int deg)
+{
+	if (deg < 0)
+		deg = 0;
+	deg = ((deg % 360) + 360) % 360;
+	__atomic_store_n(&g_cam_display_rotation_deg, deg, __ATOMIC_RELAXED);
+}
+
+int cam_android_get_display_rotation(void)
+{
+	return __atomic_load_n(&g_cam_display_rotation_deg, __ATOMIC_RELAXED);
+}
+
 /* Per-virtual-device record kept in bridgeRegistry. */
 typedef struct
 {
@@ -222,9 +241,15 @@ static INT16 cam_android_get_media_type_descriptions(ICamHal* ihal, const char* 
 	    *nMediaTypes < 1)
 		return -1;
 
-	/* Pick the first format in priority order that the HAL can deliver.
-	 * Camera2 NDK gives us either H264 (encoder path) or NV12 (raw path). */
-	static const CAM_MEDIA_FORMAT preferred[] = { CAM_MEDIA_FORMAT_H264, CAM_MEDIA_FORMAT_NV12 };
+	/* Advertise H.264 input/output. We can't rely on the channel layer to
+	 * transcode NV12→H.264 because the FFmpeg shipped with this build only
+	 * has the H.264 decoder (`ff_h264_decoder`); `avcodec_find_encoder` for
+	 * AV_CODEC_ID_H264 returns NULL, so every transcode call fails and zero
+	 * samples make it to the wire. Instead the Android capture backend
+	 * captures NV12 via AImageReader and encodes to H.264 itself using
+	 * AMediaCodec, then submits the H.264 bytes — channel layer treats it
+	 * as passthrough (input==output). */
+	static const CAM_MEDIA_FORMAT preferred[] = { CAM_MEDIA_FORMAT_H264 };
 	INT16 bestIdx = -1;
 	for (size_t p = 0; p < ARRAYSIZE(preferred) && bestIdx < 0; ++p)
 	{
@@ -315,13 +340,15 @@ static UINT cam_android_stop_stream(ICamHal* ihal, const char* deviceId, int str
 		return ERROR_INVALID_PARAMETER;
 
 	pthread_mutex_lock(&hal->lock);
-	CamAndroidStream* s = (CamAndroidStream*)HashTable_GetItemValue(hal->streams, deviceId);
-	if (s)
+	/* HashTable_Remove invokes fnObjectFree (cam_android_stream_free) on the
+	 * value, which stops capture and destroys the per-stream mutex. Do NOT
+	 * also call cam_android_stream_free explicitly afterwards — that's a
+	 * double-free / double pthread_mutex_destroy and aborts under FORTIFY. */
+	BOOL existed = HashTable_GetItemValue(hal->streams, deviceId) != NULL;
+	if (existed)
 		HashTable_Remove(hal->streams, deviceId);
 	pthread_mutex_unlock(&hal->lock);
-	if (!s)
-		return CHANNEL_RC_OK;
-	cam_android_stream_free(s);
+	WINPR_UNUSED(existed);
 	return CHANNEL_RC_OK;
 }
 

@@ -1153,6 +1153,19 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1has_1h264(JNIEnv* env,
 	return JNI_TRUE;
 }
 
+/* Forward declaration — defined in libfreerdp-client3 (rdpecam HAL). The JNI
+ * shim is exposed here because libfreerdp-android is the Java-visible .so. */
+extern void cam_android_set_display_rotation(int deg);
+
+JNIEXPORT void JNICALL
+Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1set_1camera_1display_1rotation(
+    JNIEnv* env, jclass cls, jint degrees)
+{
+	(void)env;
+	(void)cls;
+	cam_android_set_display_rotation((int)degrees);
+}
+
 JNIEXPORT jstring JNICALL
 Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1get_1version(JNIEnv* env, jclass cls)
 {

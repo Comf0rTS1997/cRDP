@@ -565,8 +565,30 @@ static UINT ecam_dev_process_deactivate_device_request(CameraDevice* dev,
 	WINPR_ASSERT(dev);
 	WINPR_UNUSED(s);
 
+	/* Windows occasionally opens a SECOND DVC channel for the same camera
+	 * (e.g. to re-query property lists after an enumeration round-trip) and
+	 * then sends DeactivateDeviceRequest on that probe channel. The original
+	 * channel that started streams is unrelated — but all DVCs for the same
+	 * camera share one CameraDevice + streams[] array, so a naive
+	 * "stop everything" here kills the live stream on the original channel.
+	 *
+	 * Only stop streams whose hSampleReqChannel matches the channel issuing
+	 * this deactivate. Streams owned by another channel keep running. */
 	for (size_t i = 0; i < ECAM_DEVICE_MAX_STREAMS; i++)
+	{
+		CameraDeviceStream* stream = &dev->streams[i];
+		if (!stream->streaming)
+			continue;
+		if (stream->hSampleReqChannel && stream->hSampleReqChannel != hchannel)
+		{
+			WLog_DBG(TAG,
+			         "DeactivateDeviceRequest on channel %p ignored for stream %zu "
+			         "owned by channel %p",
+			         (void*)hchannel, i, (void*)stream->hSampleReqChannel);
+			continue;
+		}
 		ecam_dev_stop_stream(dev, i);
+	}
 
 	return ecam_channel_send_generic_msg(dev->ecam, hchannel, CAM_MSG_ID_SuccessResponse);
 }

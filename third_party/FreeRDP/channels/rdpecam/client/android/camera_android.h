@@ -88,6 +88,14 @@ UINT cam_android_bridge_unregister(const char* deviceId);
 UINT cam_android_bridge_push(const char* deviceId, const BYTE* data, size_t size,
                              BOOL isKeyframe, BOOL isEncoded, int64_t tsUs);
 
+/* Set the current Activity's display rotation in degrees (0/90/180/270).
+ * The Camera2 capture path reads this at capture_start to compute the
+ * sensor→display rotation that should be applied to outgoing NV12 frames.
+ * External cameras (LENS_FACING_EXTERNAL) ignore this entirely. Updates
+ * mid-stream don't take effect until the next StartStream. */
+void cam_android_set_display_rotation(int deg);
+int cam_android_get_display_rotation(void);
+
 #ifdef __cplusplus
 }
 #endif

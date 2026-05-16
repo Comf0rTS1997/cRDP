@@ -61,7 +61,14 @@ private suspend fun verifyBiometricForProfile(
     requireBiometricToDecrypt: Boolean,
 ): Boolean {
     val profile = mainViewModel.getProfile(profileId) ?: return true
-    val needsBiometric = mainViewModel.requireBiometric(profile) || requireBiometricToDecrypt
+    // The global "require biometric to decrypt credentials" toggle should only
+    // gate connect when there's actually a credential to decrypt. Gateway profiles
+    // store a bearer token (not biometric-bound) and direct profiles with an empty
+    // password have nothing to unwrap — prompting in those cases is pure friction.
+    val hasEncryptedSecret = profile is com.crdp.core.rdp.model.DirectConnectionProfile &&
+        profile.password.isNotEmpty()
+    val needsBiometric = mainViewModel.requireBiometric(profile) ||
+        (requireBiometricToDecrypt && hasEncryptedSecret)
     if (!needsBiometric) return true
     val activity = context as? FragmentActivity ?: return false
     val result = BiometricPrompter.prompt(

@@ -111,6 +111,12 @@ class AFreeRdpEngine @Inject constructor(
 
     init {
         LibFreeRDP.loadNativeLibraries()
+        // Install the camera-orientation sink. The UI side (SessionScreen via
+        // SessionViewModel) pushes display rotation through CameraOrientationBridge
+        // when the configuration changes; we forward it to the rdpecam native HAL.
+        com.crdp.core.rdp.CameraOrientationBridge.installSink { degrees ->
+            runCatching { LibFreeRDP.freerdp_set_camera_display_rotation(degrees) }
+        }
     }
 
     override suspend fun connect(params: RdpConnectParams): Result<Unit> = withContext(Dispatchers.IO) {
@@ -678,7 +684,17 @@ class AFreeRdpEngine @Inject constructor(
         // rdpecam DVC. The Android HAL surfaces device ids like "front", "back",
         // "external:0", "usb:vid_pid". Built-in Front/Back/External map to a wildcard
         // plus a hint the HAL filters on; Specific pins to the chosen native id.
-        if (p.cameraRedirect != com.crdp.core.rdp.engine.CameraRedirect.Disabled) {
+        //
+        // Hard gate: if the user hasn't granted CAMERA permission, do NOT add the
+        // rdpecam DVC arg. The native HAL otherwise opens Camera2 inside the FreeRDP
+        // worker thread and crashes (no permission → SecurityException across the JNI
+        // boundary, which manifests as a native abort). The user's runtime grant comes
+        // through the activity result on the next reconnect.
+        val cameraPermitted = androidx.core.content.ContextCompat.checkSelfPermission(
+            appContext,
+            android.Manifest.permission.CAMERA,
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (p.cameraRedirect != com.crdp.core.rdp.engine.CameraRedirect.Disabled && cameraPermitted) {
             val devTok = when (p.cameraRedirect) {
                 com.crdp.core.rdp.engine.CameraRedirect.BuiltInFront -> "front"
                 com.crdp.core.rdp.engine.CameraRedirect.BuiltInBack -> "back"
@@ -693,11 +709,7 @@ class AFreeRdpEngine @Inject constructor(
         args += "/sec:nla"
         // Restrict Negotiate SPNEGO to NTLM only; skips Kerberos (no KDC in direct-IP scenarios).
         args += "/auth-pkg-list:ntlm"
-        // Bumped to TRACE for the rdpecam family to debug HAL/enumeration negotiation;
-        // global stays at WARN to keep noise low. Switch back to a single
-        // "/log-level:WARN" once camera redirection is verified working.
         args += "/log-level:WARN"
-        args += "/log-filters:com.freerdp.channels.rdpecam-enum.client:DEBUG,com.freerdp.channels.rdpecam-dev.client:DEBUG,com.freerdp.channels.rdpecam-android.client:DEBUG"
         return args.toTypedArray()
     }
 

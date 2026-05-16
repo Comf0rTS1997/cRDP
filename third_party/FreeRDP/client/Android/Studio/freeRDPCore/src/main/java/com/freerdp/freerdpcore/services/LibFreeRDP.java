@@ -123,6 +123,17 @@ public class LibFreeRDP
 
 	private static native boolean freerdp_has_h264();
 
+	/**
+	 * Updates the display rotation used by the rdpecam HAL to compute
+	 * sensor→display rotation for the LIVE NV12 frames it emits.
+	 *
+	 * @param degrees 0, 90, 180, or 270 — matches {@link android.view.Display#getRotation()}
+	 *                multiplied by 90. External cameras ignore this value.
+	 *                The value takes effect on the next StartStream; mid-stream
+	 *                changes don't re-rotate frames already queued in the encoder.
+	 */
+	public static native void freerdp_set_camera_display_rotation(int degrees);
+
 	private static native String freerdp_get_jni_version();
 
 	private static native String freerdp_get_version();

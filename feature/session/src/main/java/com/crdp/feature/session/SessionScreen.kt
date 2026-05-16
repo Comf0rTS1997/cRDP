@@ -197,6 +197,66 @@ fun SessionRoute(
         viewModel.onWindowSizeAvailable(windowW, windowH)
     }
 
+    // Tell the rdpecam HAL the orientation it should rotate captured frames into.
+    //
+    // Handheld: use OrientationEventListener (accelerometer-derived) rather than
+    // Display.getRotation() — if Auto-rotate is off the display rotation stays
+    // at 0 even when the phone is physically held in landscape, but we still
+    // want the camera frame to follow the user's grip.
+    //
+    // DeX: the phone's accelerometer is meaningless — picking up the phone or
+    // setting it down would randomly rotate the camera view on the monitor.
+    // Lock to surfaceRot=90 (landscape) so the Camera2 formula resolves to a
+    // rotation of 0 for sensors mounted at 90° (typical Samsung phones).
+    val ctxForRotation = LocalContext.current
+    DisposableEffect(inDexMode) {
+        if (inDexMode) {
+            com.crdp.core.rdp.CameraOrientationBridge.setDisplayRotation(90)
+            return@DisposableEffect onDispose { }
+        }
+        val sensorListener = object : android.view.OrientationEventListener(
+            ctxForRotation,
+            android.hardware.SensorManager.SENSOR_DELAY_NORMAL,
+        ) {
+            private var lastQuantized = -1
+            override fun onOrientationChanged(orientation: Int) {
+                if (orientation == ORIENTATION_UNKNOWN) return
+                // OrientationEventListener returns the CLOCKWISE angle the device
+                // has been rotated from natural. The standard Camera2 rotation
+                // formula expects Surface.ROTATION_* (counter-clockwise convention).
+                // Convert: surface = (360 − oel) % 360.
+                //   OEL  0  (natural)        ↔ Surface 0
+                //   OEL  90 (top-right)      ↔ Surface 270
+                //   OEL  180 (upside-down)   ↔ Surface 180
+                //   OEL  270 (top-left)      ↔ Surface 90
+                val oelQuantized = when {
+                    orientation >= 315 || orientation < 45 -> 0
+                    orientation in 45..134 -> 90
+                    orientation in 135..224 -> 180
+                    else -> 270
+                }
+                val q = (360 - oelQuantized) % 360
+                if (q != lastQuantized) {
+                    lastQuantized = q
+                    com.crdp.core.rdp.CameraOrientationBridge.setDisplayRotation(q)
+                }
+            }
+        }
+        if (sensorListener.canDetectOrientation()) {
+            sensorListener.enable()
+        } else {
+            val r = view.display?.rotation ?: android.view.Surface.ROTATION_0
+            val q = when (r) {
+                android.view.Surface.ROTATION_90 -> 90
+                android.view.Surface.ROTATION_180 -> 180
+                android.view.Surface.ROTATION_270 -> 270
+                else -> 0
+            }
+            com.crdp.core.rdp.CameraOrientationBridge.setDisplayRotation(q)
+        }
+        onDispose { sensorListener.disable() }
+    }
+
     // Audio defaults are negotiated at connect time only — push once per change of
     // settings; if a session is already running, the new defaults apply on the next
     // connect (matches the DPI-default model exactly).
@@ -867,12 +927,29 @@ private fun SessionScreen(
         val snapPx = with(density) { 64.dp.toPx() }
 
         // Initialise position: right edge, upper 1/3 of screen.
+        // Also re-clamp on every screen-size change (live resize / rotation / DeX
+        // window resize) so the dock never strands itself outside the window.
         LaunchedEffect(screenWPx, screenHPx) {
-            if (dockPos.x < 0f && screenWPx > 0f && screenHPx > 0f) {
+            if (screenWPx <= 0f || screenHPx <= 0f) return@LaunchedEffect
+            if (dockPos.x < 0f) {
                 dockPos = Offset(
                     x = screenWPx - collapsedDockWPx,
                     y = screenHPx / 6f,
                 )
+            } else {
+                // If the dock was snapped to the right edge, keep it stuck there as
+                // the edge moves; otherwise just clamp into the new bounds.
+                val prevRightSnap = dockPos.x >= screenWPx - collapsedDockWPx - 1f ||
+                    dockPos.x > screenWPx - collapsedDockWPx
+                val newX = if (prevRightSnap) {
+                    (screenWPx - collapsedDockWPx).coerceAtLeast(0f)
+                } else {
+                    dockPos.x.coerceIn(0f, (screenWPx - collapsedDockWPx).coerceAtLeast(0f))
+                }
+                val newY = dockPos.y.coerceIn(0f, (screenHPx - dockHPx).coerceAtLeast(0f))
+                if (newX != dockPos.x || newY != dockPos.y) {
+                    dockPos = Offset(newX, newY)
+                }
             }
         }
 
@@ -888,12 +965,17 @@ private fun SessionScreen(
         }
 
         // When expanding on the right edge, shift the dock inward so it stays on screen.
+        // Always clamp against the current window so a shrink-resize can't strand the
+        // dock outside the visible area before the resize LaunchedEffect re-fires.
+        val maxRenderX = (screenWPx - currentDockWPx).coerceAtLeast(0f)
         val renderDockX = when {
             isEdgeExpanded && isOnRightEdge -> (screenWPx - edgeExpandedDockWPx).coerceAtLeast(0f)
-            dockPos.x >= 0f -> dockPos.x
+            dockPos.x >= 0f -> dockPos.x.coerceIn(0f, maxRenderX)
             else -> 0f
         }
-        val renderDockY = if (dockPos.y >= 0f) dockPos.y.coerceIn(0f, screenHPx - dockHPx) else 0f
+        val renderDockY = if (dockPos.y >= 0f) {
+            dockPos.y.coerceIn(0f, (screenHPx - dockHPx).coerceAtLeast(0f))
+        } else 0f
 
         // Keep dock exclusion bounds current every frame so the outer pointerInput
         // always skips touches on the dock regardless of how fast it moves.

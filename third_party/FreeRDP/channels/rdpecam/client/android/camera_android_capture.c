@@ -72,17 +72,148 @@ typedef struct
 	ACaptureRequest* request;
 	ANativeWindow* captureWindow; /* whichever surface Camera2 writes into */
 
-	/* H.264 encoder path */
+	/* H.264 encoder. The encoder is fed manually with NV12 bytes copied from
+	 * the AImageReader frame — we deliberately avoid AMediaCodec_createInputSurface,
+	 * because that path makes the camera write directly into a SurfaceTexture
+	 * the encoder owns, which Samsung CamX (S25 family) refuses ("Invalid
+	 * Camera buffer [0x0]" / ERROR_CAMERA_SERVICE). Manual feeding works
+	 * everywhere. */
 	AMediaCodec* encoder;
 	pthread_t drainThread;
 	atomic_int drainStop;
 	atomic_int drainRunning;
+	int encW;
+	int encH;
+	int64_t encPtsUs; /* monotonically-increasing 1/fps ticks */
+	int encFps;
 
 	/* Raw YUV path */
 	AImageReader* reader;
 	BYTE* nv12Buf;
 	size_t nv12Cap;
+
+	/* Rotation / mirroring for built-in cameras.
+	 *   rotationDeg : 0 / 90 / 180 / 270, applied CW to the raw NV12 frame.
+	 *   mirrorH     : horizontal flip (front cameras face the user; without
+	 *                 mirroring, text and gestures look reversed).
+	 *   rawW/rawH   : dimensions of the raw NV12 from AImageReader.
+	 *   outW/outH   : dimensions handed to the encoder. Swapped when
+	 *                 rotationDeg is 90 or 270.
+	 *   rotBuf      : destination buffer when a rotation/mirror is needed.
+	 *                 Allocated lazily on first frame. Lifetime = capture
+	 *                 session. */
+	int rotationDeg;
+	BOOL mirrorH;
+	int rawW, rawH;
+	int outW, outH;
+	BYTE* rotBuf;
+	size_t rotCap;
+
+	/* Incremented per delivered AImage. feed_nv12_to_encoder uses it to throttle
+	 * the forced sync-frame request (every ~60 frames / ~2s @ 30fps). */
+	int frameCount;
 } CamCaptureState;
+
+/* Forward declarations */
+static UINT feed_nv12_to_encoder(CamAndroidStream* stream, CamCaptureState* st, const BYTE* nv12,
+                                 size_t size);
+
+/* ---------- NV12 rotate / mirror ---------- *
+ *
+ * Transforms an NV12 frame in place from sensor → display orientation, with
+ * optional horizontal mirror (used for front-facing cameras so the user sees
+ * a "mirror image" rather than a left/right-reversed one).
+ *
+ * The Y plane is `srcW * srcH` bytes. The interleaved UV plane is
+ * `srcW * srcH / 2` bytes with chroma sub-sampled 2×2 — each (cb, cr) pair
+ * covers a 2×2 Y block. The rotation moves whole 2×2 blocks so chroma
+ * stays aligned with luma.
+ *
+ * Output dimensions:
+ *   rotationDeg ∈ {0, 180} : (srcW, srcH)
+ *   rotationDeg ∈ {90, 270}: (srcH, srcW)  — caller must size `dst` for the
+ *                                            swapped geometry.
+ *
+ * Horizontal mirror is applied AFTER rotation. (rotation 90/270 + mirror
+ * together is the standard "front camera selfie" transform that matches
+ * what apps like Camera2 expect.)
+ */
+static void rotate_mirror_nv12(const BYTE* src, int srcW, int srcH, BYTE* dst, int rotationDeg,
+                               BOOL mirrorH)
+{
+	const BYTE* srcY = src;
+	const BYTE* srcUV = src + (size_t)srcW * (size_t)srcH;
+	int dstW = (rotationDeg == 90 || rotationDeg == 270) ? srcH : srcW;
+	int dstH = (rotationDeg == 90 || rotationDeg == 270) ? srcW : srcH;
+	BYTE* dstY = dst;
+	BYTE* dstUV = dst + (size_t)dstW * (size_t)dstH;
+
+	for (int y = 0; y < srcH; ++y)
+	{
+		for (int x = 0; x < srcW; ++x)
+		{
+			int nx, ny;
+			switch (rotationDeg)
+			{
+				case 90:
+					nx = srcH - 1 - y;
+					ny = x;
+					break;
+				case 180:
+					nx = srcW - 1 - x;
+					ny = srcH - 1 - y;
+					break;
+				case 270:
+					nx = y;
+					ny = srcW - 1 - x;
+					break;
+				default:
+					nx = x;
+					ny = y;
+					break;
+			}
+			if (mirrorH)
+				nx = dstW - 1 - nx;
+			dstY[ny * dstW + nx] = srcY[y * srcW + x];
+		}
+	}
+
+	const int srcUVRows = srcH / 2;
+	const int srcUVCols = srcW / 2;
+	for (int uy = 0; uy < srcUVRows; ++uy)
+	{
+		for (int ux = 0; ux < srcUVCols; ++ux)
+		{
+			int nux, nuy;
+			switch (rotationDeg)
+			{
+				case 90:
+					nux = srcUVRows - 1 - uy;
+					nuy = ux;
+					break;
+				case 180:
+					nux = srcUVCols - 1 - ux;
+					nuy = srcUVRows - 1 - uy;
+					break;
+				case 270:
+					nux = uy;
+					nuy = srcUVCols - 1 - ux;
+					break;
+				default:
+					nux = ux;
+					nuy = uy;
+					break;
+			}
+			int dstUVCols = dstW / 2;
+			if (mirrorH)
+				nux = dstUVCols - 1 - nux;
+			const BYTE* sp = srcUV + ((size_t)uy * srcUVCols + ux) * 2;
+			BYTE* dp = dstUV + ((size_t)nuy * dstUVCols + nux) * 2;
+			dp[0] = sp[0]; /* Cb */
+			dp[1] = sp[1]; /* Cr */
+		}
+	}
+}
 
 /* ---------- Raw YUV path ---------- */
 
@@ -154,8 +285,87 @@ static void on_image_available(void* ctx, AImageReader* reader)
 			dst[2 * x + 1] = srcV[x * uvPixelStride];
 		}
 	}
-	cam_android_submit_frame(stream, st->nv12Buf, need);
+
+	/* Bumped per delivered frame; used by feed_nv12_to_encoder to request a
+	 * forced sync frame every ~2 seconds (see comment in that function). */
+	st->frameCount++;
+
+	/* If a rotation or mirror is needed (built-in cameras only), apply it
+	 * into rotBuf and feed that to the encoder instead of nv12Buf. */
+	const BYTE* feedBuf = st->nv12Buf;
+	size_t feedSize = need;
+	if (st->rotationDeg != 0 || st->mirrorH)
+	{
+		const size_t rotNeed = (size_t)st->outW * (size_t)st->outH * 3 / 2;
+		if (st->rotCap < rotNeed)
+		{
+			BYTE* nb = (BYTE*)realloc(st->rotBuf, rotNeed);
+			if (!nb)
+			{
+				AImage_delete(image);
+				return;
+			}
+			st->rotBuf = nb;
+			st->rotCap = rotNeed;
+		}
+		rotate_mirror_nv12(st->nv12Buf, width, height, st->rotBuf, st->rotationDeg, st->mirrorH);
+		feedBuf = st->rotBuf;
+		feedSize = rotNeed;
+	}
+
+	feed_nv12_to_encoder(stream, st, feedBuf, feedSize);
 	AImage_delete(image);
+}
+
+/* Pulls an input buffer off the encoder, copies the NV12 frame into it (the
+ * encoder is configured with COLOR_FormatYUV420SemiPlanar = NV12), and queues
+ * it with a monotonic 1/fps timestamp. Drops the frame if no input buffer is
+ * available within 5ms — better to drop a frame than block the AImageReader
+ * listener thread and stall the camera. */
+static UINT feed_nv12_to_encoder(CamAndroidStream* stream, CamCaptureState* st, const BYTE* nv12,
+                                 size_t size)
+{
+	if (!stream || !st || !st->encoder || !nv12 || !size)
+		return ERROR_INVALID_PARAMETER;
+
+	ssize_t idx = AMediaCodec_dequeueInputBuffer(st->encoder, 5000 /* 5ms */);
+	if (idx < 0)
+		return CHANNEL_RC_OK; /* no buffer; drop this frame */
+
+	size_t bufSize = 0;
+	uint8_t* buf = AMediaCodec_getInputBuffer(st->encoder, (size_t)idx, &bufSize);
+	if (!buf || bufSize < size)
+	{
+		/* Surrender the buffer back without enqueuing a frame. */
+		AMediaCodec_queueInputBuffer(st->encoder, (size_t)idx, 0, 0, 0, 0);
+		return ERROR_INTERNAL_ERROR;
+	}
+	memcpy(buf, nv12, size);
+
+	const int fps = st->encFps > 0 ? st->encFps : 30;
+	const int64_t step = 1000000 / fps;
+	st->encPtsUs += step;
+	AMediaCodec_queueInputBuffer(st->encoder, (size_t)idx, 0, size, st->encPtsUs, 0);
+
+	/* Force a sync frame (SPS/PPS + IDR) every ~2 seconds. The encoder's
+	 * AMEDIAFORMAT_KEY_I_FRAME_INTERVAL=1 already requests one keyframe per
+	 * second, but if a single keyframe drops on the wire (RDP is over TCP,
+	 * but DVCs can still slice across PDUs), the Windows decoder stays stuck
+	 * on P-frames until the next interval boundary. Explicitly requesting a
+	 * sync gives the decoder a recovery opportunity at a predictable cadence
+	 * — the user reported one-off "stuck on first frame, restart Camera app
+	 * fixes it" hangs, which this defends against. */
+	if ((st->frameCount % 60) == 0 && st->frameCount > 0)
+	{
+		AMediaFormat* params = AMediaFormat_new();
+		if (params)
+		{
+			AMediaFormat_setInt32(params, "request-sync", 0);
+			AMediaCodec_setParameters(st->encoder, params);
+			AMediaFormat_delete(params);
+		}
+	}
+	return CHANNEL_RC_OK;
 }
 
 /* ---------- H.264 encoder path ---------- */
@@ -253,11 +463,25 @@ static void capture_state_free(CamCaptureState* st)
 	if (!st)
 		return;
 
+	/* Stop the camera→AImageReader listener BEFORE we begin tearing down the
+	 * encoder. on_image_available → feed_nv12_to_encoder touches st->encoder;
+	 * if a callback fires while we're mid-teardown the encoder pointer races.
+	 * AImageReader_setImageListener(NULL) prevents new callbacks; in-flight
+	 * callbacks complete on their own (they're fast — memcpy + queueInputBuffer). */
+	if (st->reader)
+		AImageReader_setImageListener(st->reader, NULL);
+
 	if (st->encoder)
 	{
 		atomic_store(&st->drainStop, 1);
-		/* Signal EOS so the encoder flushes; the drain loop will see EOS and exit. */
-		AMediaCodec_signalEndOfInputStream(st->encoder);
+		/* Manual-feed encoder: signal EOS by queueing an empty input buffer with
+		 * BUFFER_FLAG_END_OF_STREAM. We deliberately don't call
+		 * AMediaCodec_signalEndOfInputStream — that one is only valid when the
+		 * encoder was created with createInputSurface, which we no longer use. */
+		ssize_t idx = AMediaCodec_dequeueInputBuffer(st->encoder, 5000);
+		if (idx >= 0)
+			AMediaCodec_queueInputBuffer(st->encoder, (size_t)idx, 0, 0, 0,
+			                             AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM);
 	}
 	if (st->session)
 	{
@@ -316,6 +540,7 @@ static void capture_state_free(CamCaptureState* st)
 		st->mgr = NULL;
 	}
 	free(st->nv12Buf);
+	free(st->rotBuf);
 	free(st);
 }
 
@@ -331,17 +556,24 @@ static UINT setup_h264_encoder(CamAndroidStream* stream, CamCaptureState* st, in
 		return ERROR_NOT_SUPPORTED;
 	}
 
+	st->encW = width;
+	st->encH = height;
+	st->encFps = fps > 0 ? fps : 30;
+	st->encPtsUs = 0;
+
 	AMediaFormat* fmt = AMediaFormat_new();
 	AMediaFormat_setString(fmt, AMEDIAFORMAT_KEY_MIME, "video/avc");
 	AMediaFormat_setInt32(fmt, AMEDIAFORMAT_KEY_WIDTH, width);
 	AMediaFormat_setInt32(fmt, AMEDIAFORMAT_KEY_HEIGHT, height);
-	AMediaFormat_setInt32(fmt, AMEDIAFORMAT_KEY_FRAME_RATE, fps > 0 ? fps : 30);
+	AMediaFormat_setInt32(fmt, AMEDIAFORMAT_KEY_FRAME_RATE, st->encFps);
 	AMediaFormat_setInt32(fmt, AMEDIAFORMAT_KEY_I_FRAME_INTERVAL, 1);
-	/* MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface — mandatory when the
-	 * encoder is fed via createInputSurface (Camera2 writes pixels via the GPU). */
-	AMediaFormat_setInt32(fmt, AMEDIAFORMAT_KEY_COLOR_FORMAT, 0x7F000789);
+	/* MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar = 21 (NV12).
+	 * We feed the encoder NV12 bytes manually (copied off AImageReader frames),
+	 * so we must NOT use COLOR_FormatSurface here — that's only valid when the
+	 * encoder owns the input surface and the camera writes through GPU. */
+	AMediaFormat_setInt32(fmt, AMEDIAFORMAT_KEY_COLOR_FORMAT, 21);
 	/* Bitrate ≈ resolution × fps × 0.1 bpp (low-motion baseline; codec ABRs from there). */
-	const int32_t bitrate = (int32_t)((int64_t)width * height * (fps > 0 ? fps : 30) / 10);
+	const int32_t bitrate = (int32_t)((int64_t)width * height * st->encFps / 10);
 	AMediaFormat_setInt32(fmt, AMEDIAFORMAT_KEY_BIT_RATE, bitrate);
 
 	media_status_t r = AMediaCodec_configure(st->encoder, fmt, NULL, NULL,
@@ -353,12 +585,6 @@ static UINT setup_h264_encoder(CamAndroidStream* stream, CamCaptureState* st, in
 		return ERROR_NOT_SUPPORTED;
 	}
 
-	r = AMediaCodec_createInputSurface(st->encoder, &st->captureWindow);
-	if (r != AMEDIA_OK || !st->captureWindow)
-	{
-		WLog_WARN(TAG, "AMediaCodec_createInputSurface failed: %d", r);
-		return ERROR_NOT_SUPPORTED;
-	}
 	if (AMediaCodec_start(st->encoder) != AMEDIA_OK)
 	{
 		WLog_WARN(TAG, "AMediaCodec_start failed");
@@ -407,9 +633,14 @@ UINT cam_android_capture_start(CamAndroidStream* stream)
 	                    stream->mediaType.FrameRateDenominator)
 	        : 30;
 
-	/* Pick the path. CAM_MEDIA_FORMAT_H264 == 0x01 per [MS-RDPECAM] §2.2.2.4. */
-	st->path = (stream->mediaType.Format == CAM_MEDIA_FORMAT_H264) ? CAM_PATH_H264_ENCODER
-	                                                               : CAM_PATH_RAW_YUV;
+	/* Hybrid path:
+	 *   1. Camera2 → AImageReader (NV12)           — bypasses CamX surface bug
+	 *   2. AImageReader → AMediaCodec input buffer — manual feed, NOT input surface
+	 *   3. AMediaCodec drain thread → cam_android_submit_frame as H.264
+	 * The channel layer can't transcode NV12→H.264 because the bundled FFmpeg
+	 * has no H.264 encoder, so we deliver H.264 directly and the channel does
+	 * a passthrough (input==output==H.264). */
+	st->path = CAM_PATH_RAW_YUV; /* now interpreted as "AImageReader source"; encoder still runs */
 
 	st->mgr = ACameraManager_create();
 	if (!st->mgr)
@@ -419,8 +650,8 @@ UINT cam_android_capture_start(CamAndroidStream* stream)
 	}
 
 	ACameraIdList* list = NULL;
-	const char* nativeId = cam_android_resolve_id(stream->dev->deviceId, st->mgr, &list);
-	if (!nativeId)
+	const char* listNativeId = cam_android_resolve_id(stream->dev->deviceId, st->mgr, &list);
+	if (!listNativeId)
 	{
 		WLog_WARN(TAG, "camera %s not present on device", stream->dev->deviceId);
 		if (list)
@@ -428,31 +659,101 @@ UINT cam_android_capture_start(CamAndroidStream* stream)
 		capture_state_free(st);
 		return ERROR_NOT_FOUND;
 	}
+	/* The pointer returned by resolve_id is owned by the ACameraIdList. We
+	 * delete that list before we're done logging / using the id, so copy it
+	 * out into a local buffer to avoid a use-after-free (previously logged
+	 * garbage like "native=Callback"). */
+	char nativeId[64] = { 0 };
+	strncpy(nativeId, listNativeId, sizeof(nativeId) - 1);
 
-	UINT setupRc =
-	    (st->path == CAM_PATH_H264_ENCODER) ? setup_h264_encoder(stream, st, w, h, fps)
-	                                        : setup_yuv_reader(stream, st, w, h);
+	/* Read sensor orientation + lens facing for this camera so we can apply
+	 * the right rotation/mirror to the NV12 frame. External cameras (USB
+	 * webcams etc.) have no fixed relationship to the phone — leave them
+	 * as-is per the spec.
+	 *
+	 *   For built-in BACK  cameras: rotation = (sensorOrientation - dispRot + 360) % 360
+	 *   For built-in FRONT cameras: rotation = (sensorOrientation + dispRot) % 360, then mirror
+	 *
+	 * On a Samsung S25 Ultra the sensor orientations are 90 (back) and 270
+	 * (front); other devices vary. */
+	int sensorOrientation = 0;
+	int facing = ACAMERA_LENS_FACING_BACK;
+	ACameraMetadata* meta = NULL;
+	if (ACameraManager_getCameraCharacteristics(st->mgr, nativeId, &meta) == ACAMERA_OK && meta)
+	{
+		ACameraMetadata_const_entry e;
+		if (ACameraMetadata_getConstEntry(meta, ACAMERA_SENSOR_ORIENTATION, &e) == ACAMERA_OK &&
+		    e.count > 0)
+			sensorOrientation = e.data.i32[0];
+		if (ACameraMetadata_getConstEntry(meta, ACAMERA_LENS_FACING, &e) == ACAMERA_OK &&
+		    e.count > 0)
+			facing = e.data.u8[0];
+		ACameraMetadata_free(meta);
+	}
+
+	const int dispRot = cam_android_get_display_rotation();
+	if (facing == ACAMERA_LENS_FACING_EXTERNAL)
+	{
+		st->rotationDeg = 0;
+		st->mirrorH = FALSE;
+	}
+	else if (facing == ACAMERA_LENS_FACING_FRONT)
+	{
+		st->rotationDeg = ((sensorOrientation + dispRot) % 360 + 360) % 360;
+		st->mirrorH = TRUE;
+	}
+	else /* BACK */
+	{
+		st->rotationDeg = ((sensorOrientation - dispRot) % 360 + 360) % 360;
+		st->mirrorH = FALSE;
+	}
+	st->rawW = w;
+	st->rawH = h;
+	if (st->rotationDeg == 90 || st->rotationDeg == 270)
+	{
+		st->outW = h;
+		st->outH = w;
+	}
+	else
+	{
+		st->outW = w;
+		st->outH = h;
+	}
+	WLog_DBG(TAG,
+	         "rotation: sensor=%d display=%d facing=%d → rot=%d mirror=%d raw=%dx%d out=%dx%d",
+	         sensorOrientation, dispRot, facing, st->rotationDeg, (int)st->mirrorH, w, h,
+	         st->outW, st->outH);
+
+	/* Publish the capture state on the stream BEFORE the AImageReader listener
+	 * is wired up. on_image_available short-circuits when stream->state is
+	 * NULL — if the camera produces frames before this assignment, the listener
+	 * fires `maxImages` times without acquiring anything, the BufferQueue fills
+	 * up, and the camera producer blocks permanently. That presents as "first
+	 * frame shows on the remote desktop, then nothing". */
+	stream->state = st;
+
+	UINT setupRc = setup_yuv_reader(stream, st, w, h);
 	if (setupRc != CHANNEL_RC_OK)
 	{
+		stream->state = NULL;
 		if (list)
 			ACameraManager_deleteCameraIdList(list);
-		/* Fall back to raw YUV if encoder setup failed (some devices lack a usable
-		 * hardware H.264 encoder; the channel will transcode upstream). */
-		if (st->path == CAM_PATH_H264_ENCODER)
-		{
-			WLog_WARN(TAG, "H.264 encoder unavailable; falling back to raw YUV path");
-			st->path = CAM_PATH_RAW_YUV;
-			if (setup_yuv_reader(stream, st, w, h) != CHANNEL_RC_OK)
-			{
-				capture_state_free(st);
-				return ERROR_INTERNAL_ERROR;
-			}
-		}
-		else
-		{
-			capture_state_free(st);
-			return setupRc;
-		}
+		capture_state_free(st);
+		return setupRc;
+	}
+
+	/* Bring up the H.264 encoder with the ROTATED dimensions. The AImageReader
+	 * still receives the raw sensor frame at (w, h); rotate_mirror_nv12()
+	 * produces a (outW × outH) NV12 buffer that we feed to the encoder. */
+	UINT encRc = setup_h264_encoder(stream, st, st->outW, st->outH, fps);
+	if (encRc != CHANNEL_RC_OK)
+	{
+		WLog_WARN(TAG, "H.264 encoder unavailable on this device; camera redirect will fail");
+		stream->state = NULL;
+		if (list)
+			ACameraManager_deleteCameraIdList(list);
+		capture_state_free(st);
+		return encRc;
 	}
 
 	ACameraDevice_StateCallbacks devCb = { .context = stream,
@@ -463,28 +764,47 @@ UINT cam_android_capture_start(CamAndroidStream* stream)
 		WLog_WARN(TAG, "openCamera failed for %s (CAMERA permission?)", nativeId);
 		if (list)
 			ACameraManager_deleteCameraIdList(list);
+		stream->state = NULL;
 		capture_state_free(st);
 		return ERROR_ACCESS_DENIED;
 	}
 	if (list)
 		ACameraManager_deleteCameraIdList(list);
 
-	if (ACameraDevice_createCaptureRequest(st->device, TEMPLATE_RECORD, &st->request) !=
+	/* TEMPLATE_PREVIEW is what AImageReader-based capture uses; TEMPLATE_RECORD
+	 * is intended for MediaCodec input surfaces and triggers Samsung's
+	 * SAT/multi-camera pipeline on the back camera, which then complains
+	 * about missing buffers. PREVIEW gives us a plain single-camera stream. */
+	if (ACameraDevice_createCaptureRequest(st->device, TEMPLATE_PREVIEW, &st->request) !=
 	    ACAMERA_OK)
 	{
+		stream->state = NULL;
 		capture_state_free(st);
 		return ERROR_INTERNAL_ERROR;
 	}
 	if (ACameraOutputTarget_create(st->captureWindow, &st->target) != ACAMERA_OK ||
 	    ACaptureRequest_addTarget(st->request, st->target) != ACAMERA_OK)
 	{
+		stream->state = NULL;
 		capture_state_free(st);
 		return ERROR_INTERNAL_ERROR;
+	}
+	/* Force auto-exposure + auto-focus on. TEMPLATE_PREVIEW already sets these
+	 * to ON on most devices but some Samsung profiles leave them OFF, which
+	 * yields uniformly-zero Y data (black frames) once capture starts. */
+	{
+		uint8_t aeMode = ACAMERA_CONTROL_AE_MODE_ON;
+		ACaptureRequest_setEntry_u8(st->request, ACAMERA_CONTROL_AE_MODE, 1, &aeMode);
+		uint8_t afMode = ACAMERA_CONTROL_AF_MODE_CONTINUOUS_VIDEO;
+		ACaptureRequest_setEntry_u8(st->request, ACAMERA_CONTROL_AF_MODE, 1, &afMode);
+		uint8_t controlMode = ACAMERA_CONTROL_MODE_AUTO;
+		ACaptureRequest_setEntry_u8(st->request, ACAMERA_CONTROL_MODE, 1, &controlMode);
 	}
 	if (ACaptureSessionOutputContainer_create(&st->outContainer) != ACAMERA_OK ||
 	    ACaptureSessionOutput_create(st->captureWindow, &st->sessionOut) != ACAMERA_OK ||
 	    ACaptureSessionOutputContainer_add(st->outContainer, st->sessionOut) != ACAMERA_OK)
 	{
+		stream->state = NULL;
 		capture_state_free(st);
 		return ERROR_INTERNAL_ERROR;
 	}
@@ -495,6 +815,7 @@ UINT cam_android_capture_start(CamAndroidStream* stream)
 	if (ACameraDevice_createCaptureSession(st->device, st->outContainer, &sessCb, &st->session) !=
 	    ACAMERA_OK)
 	{
+		stream->state = NULL;
 		capture_state_free(st);
 		return ERROR_INTERNAL_ERROR;
 	}
@@ -502,11 +823,11 @@ UINT cam_android_capture_start(CamAndroidStream* stream)
 	if (ACameraCaptureSession_setRepeatingRequest(st->session, NULL, 1, requests, NULL) !=
 	    ACAMERA_OK)
 	{
+		stream->state = NULL;
 		capture_state_free(st);
 		return ERROR_INTERNAL_ERROR;
 	}
 
-	stream->state = st;
 	WLog_INFO(TAG, "Camera2 capture: device=%s native=%s %dx%d %dfps path=%s",
 	          stream->dev->deviceId, nativeId, w, h, fps,
 	          st->path == CAM_PATH_H264_ENCODER ? "H264" : "NV12");

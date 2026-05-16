@@ -194,6 +194,15 @@ public final class LibFreeRDP {
     // ────── native declarations (FQN must match libfreerdp-android.so symbols) ─
     private static native boolean freerdp_has_h264();
     private static native String  freerdp_get_jni_version();
+
+    /**
+     * Sends the current Activity display rotation to the rdpecam HAL so it
+     * rotates/mirrors NV12 frames into display orientation. External cameras
+     * ignore this. Takes effect on the next StartStream.
+     *
+     * @param degrees 0, 90, 180, or 270 — Surface.getRotation() × 90.
+     */
+    public static native void freerdp_set_camera_display_rotation(int degrees);
     private static native String  freerdp_get_version();
     private static native String  freerdp_get_build_revision();
     private static native String  freerdp_get_build_config();

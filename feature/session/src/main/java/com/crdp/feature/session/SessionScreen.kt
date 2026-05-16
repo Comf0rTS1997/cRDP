@@ -69,7 +69,6 @@ import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInput
 import kotlinx.coroutines.withTimeoutOrNull
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -83,7 +82,6 @@ import android.view.KeyCharacterMap
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -424,7 +422,6 @@ private fun SessionScreen(
     val sessionState by port.sessionState.collectAsStateWithLifecycle()
     val cursorFrame by port.cursor.collectAsStateWithLifecycle()
     val focusRequester = remember { FocusRequester() }
-    val clipboardManager = LocalClipboardManager.current
     val context = LocalContext.current
     val view = LocalView.current
     val scope = rememberCoroutineScope()
@@ -470,10 +467,10 @@ private fun SessionScreen(
     val scrollPxPerDetent = with(density) { 12.dp.toPx() }
     // ~24dp change in finger spread = one Ctrl+wheel zoom step.
     val pinchPxPerDetent = with(density) { 24.dp.toPx() }
-    // Trackpad: a second tap that starts within this window of the first tap's UP,
-    // close to the first tap's location, becomes "tap-and-a-half" → drag.
+    // Trackpad: a second tap that starts within this window of the first tap's UP
+    // becomes "tap-and-a-half" → drag. Position is intentionally not constrained
+    // (see the tap-and-half block for why).
     val doubleTapDragWindowMs = 300L
-    val doubleTapDragMaxOffsetPx = with(density) { 32.dp.toPx() }
     // Trackpad two-finger tap (right-click) constraints.
     val twoFingerTapMaxDurationMs = 350L
     val twoFingerTapMaxMovePx = with(density) { 16.dp.toPx() }
@@ -484,8 +481,6 @@ private fun SessionScreen(
     // Records the time of the last single-finger tap UP so a follow-up Down can
     // promote into a tap-and-a-half drag. Persisted across gesture-loop iterations.
     val trackpadLastTapMs = remember { mutableStateOf(0L) }
-    val trackpadLastTapX = remember { mutableStateOf(0f) }
-    val trackpadLastTapY = remember { mutableStateOf(0f) }
     val directTouchLastTapMs = remember { mutableStateOf(0L) }
     val directTouchLastTapRdpX = remember { mutableStateOf(0f) }
     val directTouchLastTapRdpY = remember { mutableStateOf(0f) }
@@ -963,15 +958,16 @@ private fun SessionScreen(
                         }
 
                         // ── Trackpad: cursor-model gesture handling ───────────
-                        // Trackpad-only: a quick second tap close to the first tap's location
-                        // promotes into a "tap-and-a-half" drag (left button held while the
-                        // finger moves), the universal trackpad drag gesture.
+                        // Trackpad-only: a quick second tap promotes into a "tap-and-a-half"
+                        // drag — left button held while the finger moves, the standard
+                        // trackpad drag gesture. Position is intentionally NOT constrained
+                        // (unlike DirectTouch's double-tap), because on a trackpad the user
+                        // can tap anywhere — the cursor is what's been positioned, not the
+                        // finger landing site.
                         val isTrackpad = inputMode == InputMode.Trackpad
                         val tapAndHalf = if (isTrackpad) {
                             val gap = gestureDownMs - trackpadLastTapMs.value
-                            val nearX = abs(downPos.x - trackpadLastTapX.value) < doubleTapDragMaxOffsetPx
-                            val nearY = abs(downPos.y - trackpadLastTapY.value) < doubleTapDragMaxOffsetPx
-                            val ok = gap in 1..doubleTapDragWindowMs && nearX && nearY
+                            val ok = gap in 1..doubleTapDragWindowMs
                             if (ok) trackpadLastTapMs.value = 0L
                             ok
                         } else false
@@ -1393,19 +1389,34 @@ private fun SessionScreen(
                                         )
                                     }
                                 } else {
-                                    // Single-finger tap.
+                                    // Single-finger tap. DEFER the click by
+                                    // doubleTapDragWindowMs so a quick follow-up touchdown
+                                    // can promote into tap-and-half drag — otherwise Windows
+                                    // would see the eager click as the first half of a
+                                    // double-click and treat tap 2's drag as "double-click
+                                    // and drag" (open / select-word, never a held-button
+                                    // drag).
                                     if (totalMoveAbsX < tapThresholdPx && totalMoveAbsY < tapThresholdPx) {
-                                        port.onPointerEvent(
-                                            PointerEvent(cursorX, cursorY, PointerAction.Down, 1, 0f),
-                                        )
-                                        port.onPointerEvent(
-                                            PointerEvent(cursorX, cursorY, PointerAction.Up, 1, 0f),
-                                        )
-                                        // Remember this tap so a fast follow-up Down can promote
-                                        // to tap-and-half drag.
-                                        trackpadLastTapMs.value = System.currentTimeMillis()
-                                        trackpadLastTapX.value = downPos.x
-                                        trackpadLastTapY.value = downPos.y
+                                        val myMs = System.currentTimeMillis()
+                                        trackpadLastTapMs.value = myMs
+                                        val clickX = cursorX
+                                        val clickY = cursorY
+                                        scope.launch {
+                                            delay(doubleTapDragWindowMs)
+                                            // tap-and-half cancels by zeroing lastTapMs, so
+                                            // the timestamps no longer match → skip emit.
+                                            if (trackpadLastTapMs.value != myMs) return@launch
+                                            trackpadLastTapMs.value = 0L
+                                            port.onPointerEvent(
+                                                PointerEvent(clickX, clickY, PointerAction.Hover, 0, 0f),
+                                            )
+                                            port.onPointerEvent(
+                                                PointerEvent(clickX, clickY, PointerAction.Down, 1, 0f),
+                                            )
+                                            port.onPointerEvent(
+                                                PointerEvent(clickX, clickY, PointerAction.Up, 1, 0f),
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -1759,32 +1770,6 @@ private fun SessionScreen(
                                     onClick = {
                                         dockMenuOpen = false
                                         scope.launch { snackbarHostState.showSnackbar("File transfer not available") }
-                                    },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Copy address") },
-                                    onClick = {
-                                        dockMenuOpen = false
-                                        val addr = when (profile) {
-                                            is DirectConnectionProfile -> profile.host
-                                            is GatewayConnectionProfile -> profile.gatewayBaseUrl
-                                        }
-                                        clipboardManager.setText(AnnotatedString(addr))
-                                        scope.launch { snackbarHostState.showSnackbar("Address copied") }
-                                    },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Session info") },
-                                    onClick = {
-                                        dockMenuOpen = false
-                                        scope.launch {
-                                            val info = when (val s = sessionState) {
-                                                is SessionState.Connected ->
-                                                    "↑${s.bytesSent}B ↓${s.bytesReceived}B · ${s.detail}"
-                                                else -> statusShort(sessionState)
-                                            }
-                                            snackbarHostState.showSnackbar(info)
-                                        }
                                     },
                                 )
                                 HorizontalDivider()

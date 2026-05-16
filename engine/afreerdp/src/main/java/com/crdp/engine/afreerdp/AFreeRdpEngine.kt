@@ -279,19 +279,29 @@ class AFreeRdpEngine @Inject constructor(
         //   PTR_FLAGS_BUTTON1     0x1000  (left)
         //   PTR_FLAGS_BUTTON2     0x2000  (right)
         //   PTR_FLAGS_BUTTON3     0x4000  (middle)
-        //   PTR_FLAGS_WHEEL       0x0200
-        //   PTR_FLAGS_HWHEEL      0x0400
+        //   PTR_FLAGS_WHEEL          0x0200
+        //   PTR_FLAGS_HWHEEL         0x0400
+        //   PTR_FLAGS_WHEEL_NEGATIVE 0x0100  (direction bit — magnitude is unsigned)
         var base = 0
         when (action) {
             PointerAction.Move, PointerAction.Hover -> base = base or 0x0800
             PointerAction.Down -> base = base or 0x8000 or buttonFlag(buttons)
             PointerAction.Up -> base = base or buttonFlag(buttons)
         }
+        // MS-RDPBCGR §2.2.8.1.1.3.1.1.3: wheel rotation is encoded as an
+        // unsigned magnitude in the low 8 bits, with PTR_FLAGS_WHEEL_NEGATIVE
+        // set for backward scrolls. The old encoding `wheel and 0xFF` flipped
+        // sign for negative values (e.g., -120 → 0x88 = +136 forward), so
+        // half of every two-finger scroll went the wrong way on Windows.
         if (wheel != 0) {
-            LibFreeRDP.sendCursorEvent(inst, x, y, base or 0x0200 or (wheel and 0xFF))
+            val neg = if (wheel < 0) 0x0100 else 0
+            val mag = kotlin.math.abs(wheel).coerceAtMost(0xFF)
+            LibFreeRDP.sendCursorEvent(inst, x, y, base or 0x0200 or neg or mag)
         }
         if (wheelH != 0) {
-            LibFreeRDP.sendCursorEvent(inst, x, y, base or 0x0400 or (wheelH and 0xFF))
+            val neg = if (wheelH < 0) 0x0100 else 0
+            val mag = kotlin.math.abs(wheelH).coerceAtMost(0xFF)
+            LibFreeRDP.sendCursorEvent(inst, x, y, base or 0x0400 or neg or mag)
         }
         if (wheel == 0 && wheelH == 0) {
             LibFreeRDP.sendCursorEvent(inst, x, y, base)

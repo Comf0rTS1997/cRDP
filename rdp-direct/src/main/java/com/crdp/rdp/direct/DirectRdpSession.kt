@@ -153,6 +153,10 @@ class DirectRdpSession @Inject constructor(
     override fun onTouchContacts(contacts: List<TouchContact>): Boolean =
         engine.sendTouchContacts(contacts)
 
+    override fun pushLocalClipboard(text: String) {
+        engine.pushLocalClipboard(text)
+    }
+
     override fun onKeyEvent(event: KeyEventPayload) {
         val targetMeta = event.metaState and SYNTH_MODIFIER_MASK
         if (isModifierKeyCode(event.keyCode)) {

@@ -22,20 +22,15 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -45,13 +40,11 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -65,14 +58,12 @@ import com.crdp.core.rdp.reachability.ReachabilityProbe
 @Composable
 fun ConnectionDetailsRoute(
     viewModel: ConnectionDetailsViewModel,
-    bandwidthProfile: String,
     onBack: () -> Unit,
     onConnect: (String) -> Unit,
     onEdit: (String) -> Unit,
 ) {
     val profile by viewModel.profile.collectAsStateWithLifecycle()
     val reachability by viewModel.reachability.collectAsStateWithLifecycle()
-    var showDeleteDialog by rememberSaveable { mutableStateOf(false) }
 
     if (profile == null) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -80,49 +71,6 @@ fun ConnectionDetailsRoute(
         }
         return
     }
-
-    ConnectionDetailsScreen(
-        profile = profile!!,
-        reachability = reachability,
-        bandwidthProfile = bandwidthProfile,
-        onBack = onBack,
-        onConnect = { onConnect(profile!!.id) },
-        onEdit = { onEdit(profile!!.id) },
-        onDeleteRequest = { showDeleteDialog = true },
-    )
-
-    if (showDeleteDialog) {
-        AlertDialog(
-            onDismissRequest = { showDeleteDialog = false },
-            title = { Text("Delete connection?") },
-            text = { Text("\"${profile!!.displayName}\" will be permanently removed.") },
-            confirmButton = {
-                TextButton(onClick = { viewModel.delete(onBack) }) { Text("Delete") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel") }
-            },
-        )
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun ConnectionDetailsScreen(
-    profile: ConnectionProfile,
-    reachability: ReachabilityProbe?,
-    bandwidthProfile: String,
-    onBack: () -> Unit,
-    onConnect: () -> Unit,
-    onEdit: () -> Unit,
-    onDeleteRequest: () -> Unit,
-) {
-    val addressLine = when (profile) {
-        is DirectConnectionProfile -> "${profile.username.ifBlank { "rdp" }}@${profile.host}"
-        is GatewayConnectionProfile -> "${profile.targetHost}:${profile.targetPort}"
-    }
-
-    var menuExpanded by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -133,34 +81,58 @@ private fun ConnectionDetailsScreen(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
                     }
                 },
-                actions = {
-                    Box {
-                        IconButton(onClick = { menuExpanded = true }) {
-                            Icon(Icons.Default.MoreVert, "More options")
-                        }
-                        DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-                            DropdownMenuItem(
-                                text = { Text("Edit") },
-                                leadingIcon = { Icon(Icons.Default.Edit, null) },
-                                onClick = { menuExpanded = false; onEdit() },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
-                                leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) },
-                                onClick = { menuExpanded = false; onDeleteRequest() },
-                            )
-                        }
-                    }
-                },
             )
         },
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .verticalScroll(rememberScrollState()),
-        ) {
+        ConnectionDetailsPaneContent(
+            profile = profile!!,
+            reachability = reachability,
+            onConnect = { onConnect(profile!!.id) },
+            onEdit = { onEdit(profile!!.id) },
+            onDelete = { viewModel.delete(onBack) },
+            modifier = Modifier.padding(padding),
+        )
+    }
+}
+
+@Composable
+fun ConnectionDetailsPaneContent(
+    profile: ConnectionProfile,
+    reachability: ReachabilityProbe?,
+    onConnect: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val addressLine = when (profile) {
+        is DirectConnectionProfile -> "${profile.username.ifBlank { "rdp" }}@${profile.host}"
+        is GatewayConnectionProfile -> "${profile.targetHost}:${profile.targetPort}"
+    }
+
+    var showDeleteDialog by rememberSaveable { mutableStateOf(false) }
+
+    if (showDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false },
+            title = { Text("Delete connection?") },
+            text = { Text("\"${profile.displayName}\" will be permanently removed.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDeleteDialog = false
+                    onDelete()
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel") }
+            },
+        )
+    }
+
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
+    ) {
             // Header card
             Surface(
                 modifier = Modifier
@@ -211,22 +183,38 @@ private fun ConnectionDetailsScreen(
                     }
 
                     Spacer(Modifier.height(16.dp))
+                    Button(
+                        onClick = onConnect,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                        ),
+                    ) {
+                        Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Connect", maxLines = 1, softWrap = false)
+                    }
+                    Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Button(
-                            onClick = onConnect,
+                        FilledTonalButton(
+                            onClick = onEdit,
                             modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.primary,
-                            ),
                         ) {
-                            Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Connect")
-                        }
-                        FilledTonalButton(onClick = onEdit) {
                             Icon(Icons.Default.Folder, null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text("Edit")
+                            Text("Edit", maxLines = 1, softWrap = false)
+                        }
+                        FilledTonalButton(
+                            onClick = { showDeleteDialog = true },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.filledTonalButtonColors(
+                                containerColor = MaterialTheme.colorScheme.errorContainer,
+                                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                            ),
+                        ) {
+                            Icon(Icons.Default.Delete, null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Delete", maxLines = 1, softWrap = false)
                         }
                     }
                 }
@@ -234,13 +222,14 @@ private fun ConnectionDetailsScreen(
 
             // Session stats grid
             SectionLabel("Session")
-            val resStr = when (profile) {
-                is DirectConnectionProfile -> "${profile.width}×${profile.height}"
-                is GatewayConnectionProfile -> "${profile.width}×${profile.height}"
-            }
+            val resStr = resolutionLabel(profile)
             val colorDepthStr = when (profile) {
                 is DirectConnectionProfile -> "${profile.colorDepth}-bit"
                 is GatewayConnectionProfile -> "32-bit"
+            }
+            val scaleStr = when (profile) {
+                is DirectConnectionProfile -> scaleLabel(profile.desktopScaleFactor)
+                is GatewayConnectionProfile -> scaleLabel(profile.desktopScaleFactor)
             }
             val latencyValue = when {
                 reachability == null -> "—"
@@ -255,10 +244,11 @@ private fun ConnectionDetailsScreen(
                     StatCard(label = "Latency", value = latencyValue, modifier = Modifier.weight(1f))
                     StatCard(label = "Resolution", value = resStr, modifier = Modifier.weight(1f))
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    StatCard(label = "Color depth", value = colorDepthStr, modifier = Modifier.weight(1f))
-                    StatCard(label = "Bandwidth", value = bandwidthProfile, modifier = Modifier.weight(1f))
-                }
+                StatCard(
+                    label = "Color depth",
+                    value = colorDepthStr,
+                    modifier = Modifier.fillMaxWidth(),
+                )
                 StatCard(
                     label = stringResource(R.string.connections_clipboard_details),
                     value = clipboardSyncLabel(profile),
@@ -269,40 +259,45 @@ private fun ConnectionDetailsScreen(
             SectionLabel("Display & performance")
             Surface(color = MaterialTheme.colorScheme.surfaceContainerLow) {
                 Column {
-                    val (w, h) = when (profile) {
-                        is DirectConnectionProfile -> profile.width to profile.height
-                        is GatewayConnectionProfile -> profile.width to profile.height
-                    }
-                    ListItem(
-                        headlineContent = { Text("Resolution") },
-                        supportingContent = { Text("${w}×${h}") },
-                        trailingContent = { Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
-                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                        modifier = Modifier.clickable(onClick = onEdit),
+                    DetailRow(
+                        title = "Resolution",
+                        value = resStr,
+                        onClick = onEdit,
                     )
                     HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
-                    ListItem(
-                        headlineContent = { Text("Color depth") },
-                        supportingContent = { Text(when (profile) { is DirectConnectionProfile -> "${profile.colorDepth}-bit"; else -> "32-bit" }) },
-                        trailingContent = { Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
-                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                        modifier = Modifier.clickable(onClick = onEdit),
+                    DetailRow(
+                        title = "Color depth",
+                        value = colorDepthStr,
+                        onClick = onEdit,
                     )
                     HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
-                    ListItem(
-                        headlineContent = { Text("Bandwidth profile") },
-                        supportingContent = { Text(bandwidthProfile) },
-                        trailingContent = { Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
-                        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                        modifier = Modifier.clickable(onClick = onEdit),
+                    DetailRow(
+                        title = "DPI scaling",
+                        value = scaleStr,
+                        onClick = onEdit,
                     )
                 }
             }
 
             Spacer(Modifier.height(32.dp))
-        }
     }
 }
+
+private fun resolutionLabel(profile: ConnectionProfile): String {
+    val auto = when (profile) {
+        is DirectConnectionProfile -> profile.autoResolution
+        is GatewayConnectionProfile -> profile.autoResolution
+    }
+    if (auto) return "Auto (window size)"
+    val (w, h) = when (profile) {
+        is DirectConnectionProfile -> profile.width to profile.height
+        is GatewayConnectionProfile -> profile.width to profile.height
+    }
+    return "${w}×${h}"
+}
+
+private fun scaleLabel(percent: Int): String =
+    if (percent <= 0) "App default" else "$percent%"
 
 private fun clipboardSyncLabel(profile: ConnectionProfile): String = when (profile) {
     is DirectConnectionProfile -> when (profile.clipboardSyncOverride) {
@@ -314,6 +309,38 @@ private fun clipboardSyncLabel(profile: ConnectionProfile): String = when (profi
         null -> "App default"
         true -> "On"
         false -> "Off"
+    }
+}
+
+// Replacement for Material3 ListItem to avoid an intrinsic-measurement crash
+// ("maxWidth(-72) must be >= minWidth(0)") that fires inside a verticalScroll
+// Column on Compose BOM 2024.12.01 / Material3 1.3.x.
+@Composable
+private fun DetailRow(
+    title: String,
+    value: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = title, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Icon(
+            imageVector = Icons.Default.ChevronRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

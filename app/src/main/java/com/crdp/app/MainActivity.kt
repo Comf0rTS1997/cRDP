@@ -38,7 +38,7 @@ import com.crdp.feature.connections.ConnectionEditorViewModel
 import com.crdp.feature.connections.ConnectionListRoute
 import com.crdp.feature.connections.ConnectionListViewModel
 import com.crdp.feature.connections.ConnectionViewMode
-import com.crdp.feature.connections.LicensesScreen
+import com.crdp.feature.connections.ConnectionsTwoPaneRoute
 import com.crdp.feature.connections.VaultRoute
 import com.crdp.app.prefs.CameraModes
 import com.crdp.app.prefs.ConnectionViewModes
@@ -58,22 +58,19 @@ private suspend fun verifyBiometricForProfile(
     mainViewModel: MainViewModel,
     context: android.content.Context,
     profileId: String,
-    requireBiometricToDecrypt: Boolean,
+    vaultEncryption: Boolean,
 ): Boolean {
     val profile = mainViewModel.getProfile(profileId) ?: return true
-    // The global "require biometric to decrypt credentials" toggle should only
-    // gate connect when there's actually a credential to decrypt. Gateway profiles
-    // store a bearer token (not biometric-bound) and direct profiles with an empty
-    // password have nothing to unwrap — prompting in those cases is pure friction.
-    val hasEncryptedSecret = profile is com.crdp.core.rdp.model.DirectConnectionProfile &&
-        profile.password.isNotEmpty()
-    val needsBiometric = mainViewModel.requireBiometric(profile) ||
-        (requireBiometricToDecrypt && hasEncryptedSecret)
-    if (!needsBiometric) return true
+    // Single global gate: only prompt when (a) vault encryption is enabled AND
+    // (b) the profile actually references vault credentials that we'd be unlocking.
+    // No vault link → nothing to gate. Vault encryption off → user opted into
+    // plaintext storage, so no UI auth check either.
+    if (!vaultEncryption) return true
+    if (!mainViewModel.referencesVaultCredentials(profile)) return true
     val activity = context as? FragmentActivity ?: return false
     val result = BiometricPrompter.prompt(
         activity = activity,
-        title = "Unlock connection",
+        title = "Unlock vault",
         subtitle = profile.displayName,
     )
     return result is BiometricResult.Success
@@ -213,7 +210,7 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                     coroutineScope.launch {
                         if (verifyBiometricForProfile(
                                 mainViewModel, context, profileId,
-                                appSettings.requireBiometricToDecrypt,
+                                appSettings.vaultEncryption,
                             )
                         ) {
                             navController.navigate("session/${Uri.encode(profileId)}")
@@ -225,7 +222,7 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                     coroutineScope.launch {
                         if (verifyBiometricForProfile(
                                 mainViewModel, context, profileId,
-                                appSettings.requireBiometricToDecrypt,
+                                appSettings.vaultEncryption,
                             )
                         ) {
                             navController.navigate("session/${Uri.encode(profileId)}") {
@@ -240,6 +237,7 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                     containerColor = MaterialTheme.colorScheme.background,
                     contentWindowInsets = WindowInsets(0),
                 ) { _ ->
+                  AdaptiveAppShell(navController = navController) {
                     NavHost(
                         navController = navController,
                         startDestination = "connections",
@@ -261,23 +259,34 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                                 ConnectionViewModes.GRID -> ConnectionViewMode.Grid
                                 else -> ConnectionViewMode.List
                             }
-                            ConnectionListRoute(
-                                viewModel = vm,
-                                onAddConnection = { navController.navigate("editor/new") },
-                                onEditConnection = { id -> navController.navigate("editor/${Uri.encode(id)}") },
-                                onOpenSession = ::connectWithBiometric,
-                                onOpenDetails = { id -> navController.navigate("details/${Uri.encode(id)}") },
-                                onOpenSettings = { navController.navigate("settings") },
-                                viewMode = currentViewMode,
-                                onViewModeChange = { mode ->
-                                    mainViewModel.setConnectionViewMode(
-                                        when (mode) {
-                                            ConnectionViewMode.Grid -> ConnectionViewModes.GRID
-                                            ConnectionViewMode.List -> ConnectionViewModes.LIST
-                                        },
-                                    )
-                                },
-                            )
+                            if (isExpandedWindow()) {
+                                ConnectionsTwoPaneRoute(
+                                    viewModel = vm,
+                                    viewMode = currentViewMode,
+                                    onOpenSession = ::connectWithBiometric,
+                                    onEditConnection = { id ->
+                                        navController.navigate("editor/${Uri.encode(id)}")
+                                    },
+                                )
+                            } else {
+                                ConnectionListRoute(
+                                    viewModel = vm,
+                                    onAddConnection = { navController.navigate("editor/new") },
+                                    onEditConnection = { id -> navController.navigate("editor/${Uri.encode(id)}") },
+                                    onOpenSession = ::connectWithBiometric,
+                                    onOpenDetails = { id -> navController.navigate("details/${Uri.encode(id)}") },
+                                    onOpenSettings = { navController.navigate("settings") },
+                                    viewMode = currentViewMode,
+                                    onViewModeChange = { mode ->
+                                        mainViewModel.setConnectionViewMode(
+                                            when (mode) {
+                                                ConnectionViewMode.Grid -> ConnectionViewModes.GRID
+                                                ConnectionViewMode.List -> ConnectionViewModes.LIST
+                                            },
+                                        )
+                                    },
+                                )
+                            }
                         }
                         composable(
                             route = "settings",
@@ -312,10 +321,8 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                                 appSettings = appSettings,
                                 onTouchAsMouse = mainViewModel::setTouchAsMouse,
                                 onHapticFeedback = mainViewModel::setHapticFeedback,
-                                onBiometricUnlock = mainViewModel::setBiometricUnlock,
-                                onRequireBiometricToDecrypt = mainViewModel::setRequireBiometricToDecrypt,
+                                onVaultEncryption = mainViewModel::setVaultEncryption,
                                 onAutoDisconnectIdle = mainViewModel::setAutoDisconnectIdle,
-                                onBandwidthProfile = mainViewModel::setBandwidthProfile,
                                 onDefaultResolution = mainViewModel::setDefaultResolution,
                                 onKeyboardLayout = mainViewModel::setKeyboardLayout,
                                 onAutoLockVaultMinutes = mainViewModel::setAutoLockVaultMinutes,
@@ -331,19 +338,20 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                                 onDefaultCameraMode = mainViewModel::setDefaultCameraMode,
                                 onDefaultClipboardSync = mainViewModel::setDefaultClipboardSync,
                                 onOpenVault = { navController.navigate("settings/vault") },
-                                onOpenLicenses = { navController.navigate("settings/licenses") },
-                                versionLabel = "Version 0 \u00B7 Build $0",
+                                onOpenAbout = { navController.navigate("settings/about") },
                                 onBack = { navController.popBackStack() },
                             )
                         }
                         composable(
-                            route = "settings/licenses",
+                            route = "settings/about",
                             enterTransition = { EnterTransition.None },
                             exitTransition = { ExitTransition.None },
                             popEnterTransition = { EnterTransition.None },
                             popExitTransition = { ExitTransition.None },
                         ) {
-                            LicensesScreen(onBack = { navController.popBackStack() })
+                            AboutScreen(
+                                onBack = { navController.popBackStack() },
+                            )
                         }
                         composable(
                             route = "settings/vault",
@@ -367,7 +375,6 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                             val vm: ConnectionDetailsViewModel = hiltViewModel()
                             ConnectionDetailsRoute(
                                 viewModel = vm,
-                                bandwidthProfile = appSettings.bandwidthProfile,
                                 onBack = { navController.popBackStack() },
                                 onConnect = ::connectWithBiometric,
                                 onEdit = { id -> navController.navigate("editor/${Uri.encode(id)}") },
@@ -387,7 +394,6 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                                 onBack = { navController.popBackStack() },
                                 onSaved = { navController.popBackStack() },
                                 onSaveAndConnect = ::saveAndConnectWithBiometric,
-                                requireBiometricToDecrypt = appSettings.requireBiometricToDecrypt,
                             )
                         }
                         composable(
@@ -438,6 +444,7 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                             )
                         }
                     }
+                  }
                 }
             }
         }

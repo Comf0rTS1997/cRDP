@@ -20,7 +20,10 @@ import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -29,17 +32,15 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -50,7 +51,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.crdp.core.rdp.model.AudioMode
 import com.crdp.core.rdp.model.AudioQuality
-import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -59,11 +59,8 @@ fun ConnectionEditorRoute(
     onBack: () -> Unit,
     onSaved: (String) -> Unit,
     onSaveAndConnect: (String) -> Unit,
-    requireBiometricToDecrypt: Boolean,
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    val snackbarHostState = remember { SnackbarHostState() }
-    val scope = rememberCoroutineScope()
 
     Scaffold(
         topBar = {
@@ -76,7 +73,6 @@ fun ConnectionEditorRoute(
                 },
             )
         },
-        snackbarHost = { SnackbarHost(snackbarHostState) },
         bottomBar = {
             Surface(
                 shadowElevation = 4.dp,
@@ -87,36 +83,14 @@ fun ConnectionEditorRoute(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    TextButton(
-                        onClick = {
-                            scope.launch {
-                                val error = when {
-                                    state.mode == EditorMode.Direct && state.host.isBlank() ->
-                                        "Host or IP is required"
-                                    state.mode == EditorMode.Direct &&
-                                        (state.port.toIntOrNull() ?: -1) !in 1..65535 ->
-                                        "Port must be 1–65535"
-                                    state.mode == EditorMode.Gateway && state.gatewayBaseUrl.isBlank() ->
-                                        "Gateway URL is required"
-                                    state.mode == EditorMode.Gateway &&
-                                        !state.gatewayBaseUrl.startsWith("http") ->
-                                        "URL must start with http:// or https://"
-                                    else -> null
-                                }
-                                snackbarHostState.showSnackbar(
-                                    error ?: "Details look valid — tap Save & connect to test live.",
-                                )
-                            }
-                        },
-                    ) { Text("Test") }
-                    Spacer(modifier = Modifier.weight(1f))
                     FilledTonalButton(
-                        onClick = { viewModel.save(requireBiometricToDecrypt, onSaved) },
+                        onClick = { viewModel.save(onSaved) },
                         modifier = Modifier.padding(end = 8.dp),
                     ) { Text("Save") }
-                    Button(onClick = { viewModel.save(requireBiometricToDecrypt, onSaveAndConnect) }) {
+                    Button(onClick = { viewModel.save(onSaveAndConnect) }) {
                         Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(18.dp))
                         Text("Save & connect", modifier = Modifier.padding(start = 4.dp))
                     }
@@ -472,67 +446,135 @@ fun ConnectionEditorRoute(
             // ── Credentials ───────────────────────────────────────────
             if (state.mode == EditorMode.Direct) {
                 SectionLabel("Credentials")
-                OutlinedTextField(
-                    value = state.username,
-                    onValueChange = viewModel::updateUsername,
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Username") },
-                    singleLine = true,
+                val entries by viewModel.vaultEntries.collectAsStateWithLifecycle()
+                VaultEntryPicker(
+                    entries = entries,
+                    selectedId = state.vaultEntryId,
+                    onSelect = viewModel::updateVaultEntryId,
+                    onCreateNew = { entry -> viewModel.saveAndSelectVaultEntry(entry) },
                 )
-                OutlinedTextField(
-                    value = state.domain,
-                    onValueChange = viewModel::updateDomain,
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Domain (optional)") },
-                    singleLine = true,
-                )
-                OutlinedTextField(
-                    value = state.password,
-                    onValueChange = viewModel::updatePassword,
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Password") },
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    supportingText = { Text("Saved with the connection profile") },
-                    leadingIcon = { Icon(Icons.Default.Lock, null) },
-                    singleLine = true,
-                )
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        Icons.Default.Fingerprint,
-                        contentDescription = null,
-                        modifier = Modifier.size(24.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(start = 12.dp),
-                    ) {
-                        Text("Use biometric unlock", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
-                        Text(
-                            "Require biometric before connect",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Switch(
-                        checked = state.requireBiometric,
-                        onCheckedChange = viewModel::updateRequireBiometric,
-                    )
-                }
             }
 
             Spacer(Modifier.height(8.dp))
         }
     }
 }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun VaultEntryPicker(
+    entries: List<com.crdp.core.rdp.model.VaultEntry>,
+    selectedId: String?,
+    onSelect: (String?) -> Unit,
+    onCreateNew: (com.crdp.core.rdp.model.VaultEntry) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    var creating by remember { mutableStateOf(false) }
+
+    val selected = entries.firstOrNull { it.id == selectedId }
+    val label = when {
+        selected != null -> selected.displayName
+        selectedId != null -> "(missing — pick another)"
+        else -> "No credentials saved"
+    }
+
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = !expanded },
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        OutlinedTextField(
+            value = label,
+            onValueChange = {},
+            readOnly = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .menuAnchor(),
+            label = { Text("Credential") },
+            leadingIcon = { Icon(Icons.Default.Lock, null) },
+            trailingIcon = {
+                ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
+            },
+            supportingText = {
+                val sub = selected?.let {
+                    buildString {
+                        if (!it.domain.isNullOrBlank()) append(it.domain).append('\\')
+                        append(it.username.ifBlank { "(no username)" })
+                    }
+                } ?: "You'll be prompted at connect time"
+                Text(sub)
+            },
+        )
+        ExposedDropdownMenuBoxScope_ExposedDropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            DropdownMenuItem(
+                text = { Text("None (prompt at connect)") },
+                onClick = {
+                    expanded = false
+                    onSelect(null)
+                },
+            )
+            if (entries.isNotEmpty()) {
+                HorizontalDivider()
+            }
+            entries.forEach { e ->
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text(e.displayName)
+                            Text(
+                                buildString {
+                                    if (!e.domain.isNullOrBlank()) append(e.domain).append('\\')
+                                    append(e.username.ifBlank { "(no username)" })
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    },
+                    onClick = {
+                        expanded = false
+                        onSelect(e.id)
+                    },
+                )
+            }
+            HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text("+ New credential…") },
+                onClick = {
+                    expanded = false
+                    creating = true
+                },
+            )
+        }
+    }
+
+    if (creating) {
+        VaultEntryDialog(
+            initial = null,
+            onCancel = { creating = false },
+            onSave = { entry ->
+                onCreateNew(entry)
+                creating = false
+            },
+        )
+    }
+}
+
+/**
+ * `ExposedDropdownMenuBoxScope.ExposedDropdownMenu` is an extension on the box's
+ * scope; declaring this thin helper composable lets the caller use it without
+ * referencing the scope by name (which lives inside the lambda receiver).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun androidx.compose.material3.ExposedDropdownMenuBoxScope.ExposedDropdownMenuBoxScope_ExposedDropdownMenu(
+    expanded: Boolean,
+    onDismissRequest: () -> Unit,
+    content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
+) = ExposedDropdownMenu(expanded = expanded, onDismissRequest = onDismissRequest, content = content)
 
 @Composable
 private fun SectionLabel(text: String) {

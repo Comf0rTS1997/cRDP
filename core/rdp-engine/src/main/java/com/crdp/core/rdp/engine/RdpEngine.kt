@@ -40,6 +40,13 @@ interface RdpEngine {
     fun sendTouchContacts(contacts: List<TouchContact>): Boolean
 
     /**
+     * Mirror a UTF-8 string into the remote clipboard channel. Returns false if the
+     * engine has no live session or the CLIPRDR channel was not negotiated. Default:
+     * silently drop — implementations override.
+     */
+    fun pushLocalClipboard(text: String): Boolean = false
+
+    /**
      * Ask the engine to renegotiate the remote desktop size on the existing session,
      * without a reconnect. Implementations are expected to use the DisplayControl
      * virtual channel (DispClientContext::SendMonitorLayout) or an equivalent.

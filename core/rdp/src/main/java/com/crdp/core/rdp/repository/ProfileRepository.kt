@@ -9,20 +9,11 @@ interface ProfileRepository {
     suspend fun getById(id: String): ConnectionProfile?
 
     /**
-     * Persists a profile. If the profile carries a password, [requireUserAuth] controls whether
-     * the AndroidKeystore key wrapping that password requires recent biometric authentication.
-     * Callers should pass the current value of the user's "Require biometric to decrypt
-     * credentials" preference so the on-disk security level matches the toggle.
+     * Persists a profile. Passwords are always encrypted under a per-profile AndroidKeystore
+     * AES-256-GCM key; the biometric gate is enforced at the UI layer (VaultGate + per-profile
+     * biometric prompt + global "require biometric to decrypt" toggle).
      */
-    suspend fun upsert(profile: ConnectionProfile, requireUserAuth: Boolean)
+    suspend fun upsert(profile: ConnectionProfile)
 
     suspend fun delete(id: String)
-
-    /**
-     * Re-encrypts all stored passwords under keys with the new [requireUserAuth] setting.
-     * Must be called only when the current biometric auth window is still valid (so existing
-     * keys with `requireUserAuth=true` can be decrypted before re-wrapping).
-     * Returns false if any password could not be re-keyed (e.g. expired auth window).
-     */
-    suspend fun rekeyAllPasswords(requireUserAuth: Boolean): Boolean
 }

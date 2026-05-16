@@ -40,8 +40,6 @@ import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -265,7 +263,7 @@ private fun ConnectionListScreen(
                 }
             } else {
                 LazyVerticalGrid(
-                    columns = GridCells.Fixed(2),
+                    columns = GridCells.Adaptive(minSize = 180.dp),
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 88.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -300,6 +298,7 @@ private fun ConnectionListItem(
     onDetails: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
+    selected: Boolean = false,
 ) {
     val supporting = when (profile) {
         is DirectConnectionProfile ->
@@ -317,55 +316,62 @@ private fun ConnectionListItem(
 
     var menuExpanded by remember { mutableStateOf(false) }
 
-    ListItem(
+    val rowBg = if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent
+    // Custom row (not Material3 ListItem) — ListItem hits a known intrinsic-measurement
+    // crash ("maxWidth(-72) must be >= minWidth(0)") in nested-pane contexts on
+    // Compose BOM 2024.12.01.
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.Transparent)
-            .clickable(onClick = onTap),
-        headlineContent = {
-            Text(profile.displayName, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
-        },
-        supportingContent = {
+            .background(rowBg)
+            .clickable(onClick = onTap)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        AvatarBox(initials = initials)
+        Spacer(Modifier.width(16.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = profile.displayName,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
             Text(
                 text = supporting,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontFamily = FontFamily.Monospace,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
-        },
-        leadingContent = {
-            AvatarBox(initials = initials)
-        },
-        trailingContent = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                StatusDot(reachability = reachability)
-                Spacer(Modifier.width(4.dp))
-                Box {
-                    IconButton(onClick = { menuExpanded = true }, modifier = Modifier.size(32.dp)) {
-                        Icon(Icons.Default.MoreVert, contentDescription = "More", modifier = Modifier.size(18.dp))
-                    }
-                    DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-                        DropdownMenuItem(
-                            text = { Text("Details") },
-                            leadingIcon = { Icon(Icons.Default.Info, null) },
-                            onClick = { menuExpanded = false; onDetails() },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Edit") },
-                            leadingIcon = { Icon(Icons.Default.Edit, null) },
-                            onClick = { menuExpanded = false; onEdit() },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
-                            leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) },
-                            onClick = { menuExpanded = false; onDelete() },
-                        )
-                    }
-                }
+        }
+        StatusDot(reachability = reachability)
+        Spacer(Modifier.width(4.dp))
+        Box {
+            IconButton(onClick = { menuExpanded = true }, modifier = Modifier.size(32.dp)) {
+                Icon(Icons.Default.MoreVert, contentDescription = "More", modifier = Modifier.size(18.dp))
             }
-        },
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-    )
+            DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                DropdownMenuItem(
+                    text = { Text("Details") },
+                    leadingIcon = { Icon(Icons.Default.Info, null) },
+                    onClick = { menuExpanded = false; onDetails() },
+                )
+                DropdownMenuItem(
+                    text = { Text("Edit") },
+                    leadingIcon = { Icon(Icons.Default.Edit, null) },
+                    onClick = { menuExpanded = false; onEdit() },
+                )
+                DropdownMenuItem(
+                    text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                    leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) },
+                    onClick = { menuExpanded = false; onDelete() },
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -376,6 +382,7 @@ private fun ConnectionGridItem(
     onDetails: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
+    selected: Boolean = false,
 ) {
     val supporting = when (profile) {
         is DirectConnectionProfile ->
@@ -393,12 +400,17 @@ private fun ConnectionGridItem(
 
     var menuExpanded by remember { mutableStateOf(false) }
 
+    val tileColor = if (selected) {
+        MaterialTheme.colorScheme.primaryContainer
+    } else {
+        MaterialTheme.colorScheme.surfaceContainerHigh
+    }
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onTap),
         shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        color = tileColor,
     ) {
         Column(
             modifier = Modifier.padding(12.dp),
@@ -462,6 +474,147 @@ private fun ConnectionGridItem(
                             leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) },
                             onClick = { menuExpanded = false; onDelete() },
                         )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Pane variant of the connection list used inside the desktop / DeX two-pane shell.
+ * No Scaffold, no FAB, no top branding — just a search bar + scrollable list/grid.
+ *
+ * Tapping a row calls [onSelect] to update the master-detail selection rather than
+ * jumping straight to a session (Connect happens from the detail pane).
+ */
+@Composable
+fun ConnectionListPane(
+    profiles: List<ConnectionProfile>,
+    reachability: Map<String, ReachabilityProbe>,
+    viewMode: ConnectionViewMode,
+    selectedId: String?,
+    onSelect: (String) -> Unit,
+    onEdit: (String) -> Unit,
+    onDelete: (ConnectionProfile) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+
+    val filtered = profiles.filter { p ->
+        searchQuery.isBlank() ||
+            p.displayName.contains(searchQuery, ignoreCase = true) ||
+            when (p) {
+                is DirectConnectionProfile -> p.host.contains(searchQuery, ignoreCase = true)
+                is GatewayConnectionProfile -> p.targetHost.contains(searchQuery, ignoreCase = true)
+            }
+    }
+
+    Column(modifier = modifier.fillMaxSize()) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            shape = RoundedCornerShape(8.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Search,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+                Spacer(Modifier.width(10.dp))
+                val textStyle = LocalTextStyle.current.copy(
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                BasicTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    modifier = Modifier.weight(1f),
+                    singleLine = true,
+                    textStyle = textStyle,
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                    decorationBox = { innerTextField ->
+                        if (searchQuery.isEmpty()) {
+                            Text(
+                                text = "Search connections…",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        innerTextField()
+                    },
+                )
+                if (searchQuery.isNotEmpty()) {
+                    IconButton(
+                        onClick = { searchQuery = "" },
+                        modifier = Modifier.size(20.dp),
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Clear",
+                            modifier = Modifier.size(16.dp),
+                        )
+                    }
+                }
+            }
+        }
+
+        Text(
+            text = "All machines · ${filtered.size}",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 16.dp, top = 6.dp, bottom = 6.dp),
+        )
+
+        if (viewMode == ConnectionViewMode.List) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 16.dp),
+            ) {
+                items(filtered, key = { it.id }) { profile ->
+                    ConnectionListItem(
+                        profile = profile,
+                        reachability = reachability[profile.id],
+                        onTap = { onSelect(profile.id) },
+                        onDetails = { onSelect(profile.id) },
+                        onEdit = { onEdit(profile.id) },
+                        onDelete = { onDelete(profile) },
+                        selected = profile.id == selectedId,
+                    )
+                    HorizontalDivider(modifier = Modifier.padding(start = 72.dp))
+                }
+                if (filtered.isEmpty()) {
+                    item { EmptyState() }
+                }
+            }
+        } else {
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(minSize = 180.dp),
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(filtered, key = { it.id }) { profile ->
+                    ConnectionGridItem(
+                        profile = profile,
+                        reachability = reachability[profile.id],
+                        onTap = { onSelect(profile.id) },
+                        onDetails = { onSelect(profile.id) },
+                        onEdit = { onEdit(profile.id) },
+                        onDelete = { onDelete(profile) },
+                        selected = profile.id == selectedId,
+                    )
+                }
+                if (filtered.isEmpty()) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        EmptyState()
                     }
                 }
             }

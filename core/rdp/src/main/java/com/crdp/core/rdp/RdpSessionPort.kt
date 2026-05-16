@@ -56,6 +56,15 @@ interface RdpSessionPort {
      * the transport cannot resize on the fly (caller should fall back to reconnect).
      */
     fun requestResolution(width: Int, height: Int, dpiScale: Int = 0): Boolean = false
+
+    /**
+     * Force-push the supplied local clipboard text into the remote session's CLIPRDR
+     * channel. Used by the UI layer to refresh the remote's view of our clipboard on
+     * window-focus regain, since [android.content.ClipboardManager.OnPrimaryClipChangedListener]
+     * is unreliable when clipboard writes come from other apps (Android 10+ visibility
+     * restrictions + Samsung One UI 8 background-listener silencing).
+     */
+    fun pushLocalClipboard(text: String) {}
 }
 
 private val EmptyChallenges: SharedFlow<EngineChallenge> =

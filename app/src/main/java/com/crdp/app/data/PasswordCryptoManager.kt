@@ -1,6 +1,5 @@
 package com.crdp.app.data
 
-import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
@@ -14,10 +13,11 @@ import javax.crypto.spec.GCMParameterSpec
 /**
  * Encrypts and decrypts per-profile passwords using AndroidKeystore AES-256-GCM keys.
  *
- * Each profile gets its own key (`crdp_pw_<profileId>`). When [requireUserAuth] is true the key
- * is bound to biometric authentication with a 30-second validity window, so decryption silently
- * fails (returns null) if the user has not authenticated recently enough — the caller is expected
- * to surface a re-auth prompt or fall back to manual password entry.
+ * Each profile gets its own key (`crdp_pw_<profileId>`). The biometric gate is enforced
+ * at the UI layer (VaultGate + per-profile/global biometric prompt in MainActivity) — the
+ * keystore key itself does NOT require user auth, because tying encryption to a biometric
+ * window means save() would silently fail whenever the user hadn't biometric-unlocked in
+ * the last 30s, which is exactly what was breaking password persistence.
  *
  * Key invalidation (user removes biometrics): [KeyPermanentlyInvalidatedException] is caught,
  * the stale key is deleted, and null is returned so the repository can trigger recovery.
@@ -33,7 +33,7 @@ internal class PasswordCryptoManager {
 
     private fun alias(profileId: String) = "$KEY_PREFIX$profileId"
 
-    private fun getOrCreateKey(profileId: String, requireUserAuth: Boolean): SecretKey {
+    private fun getOrCreateKey(profileId: String): SecretKey {
         val ks = keyStore()
         val a = alias(profileId)
         ks.getKey(a, null)?.let { return it as SecretKey }
@@ -45,15 +45,6 @@ internal class PasswordCryptoManager {
             setBlockModes(KeyProperties.BLOCK_MODE_GCM)
             setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
             setKeySize(256)
-            if (requireUserAuth) {
-                setUserAuthenticationRequired(true)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    setUserAuthenticationParameters(30, KeyProperties.AUTH_BIOMETRIC_STRONG)
-                } else {
-                    @Suppress("DEPRECATION")
-                    setUserAuthenticationValidityDurationSeconds(30)
-                }
-            }
         }.build()
 
         return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, KEYSTORE).run {
@@ -63,8 +54,8 @@ internal class PasswordCryptoManager {
     }
 
     /** Returns base64-encoded "ivB64:ciphertextB64". */
-    fun encrypt(profileId: String, plaintext: String, requireUserAuth: Boolean): String {
-        val key = getOrCreateKey(profileId, requireUserAuth)
+    fun encrypt(profileId: String, plaintext: String): String {
+        val key = getOrCreateKey(profileId)
         val cipher = Cipher.getInstance(TRANSFORM).apply { init(Cipher.ENCRYPT_MODE, key) }
         val ct = cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
         val ivB64 = Base64.encodeToString(cipher.iv, Base64.NO_WRAP)
@@ -73,8 +64,7 @@ internal class PasswordCryptoManager {
     }
 
     /**
-     * Returns the decrypted password, or null if the key is missing, invalidated, or the
-     * biometric authentication window has expired.
+     * Returns the decrypted password, or null if the key is missing or invalidated.
      */
     fun decrypt(profileId: String, encoded: String): String? = runCatching {
         val ks = keyStore()
@@ -94,16 +84,6 @@ internal class PasswordCryptoManager {
 
     fun deleteKey(profileId: String) {
         runCatching { keyStore().deleteEntry(alias(profileId)) }
-    }
-
-    /**
-     * Re-encrypts a password under a key with updated [newRequireUserAuth].
-     * Returns null if decryption of [encoded] fails (e.g. expired auth window).
-     */
-    fun rekey(profileId: String, encoded: String, newRequireUserAuth: Boolean): String? {
-        val plaintext = decrypt(profileId, encoded) ?: return null
-        deleteKey(profileId)
-        return encrypt(profileId, plaintext, newRequireUserAuth)
     }
 
     private fun keyStore() = KeyStore.getInstance(KEYSTORE).apply { load(null) }

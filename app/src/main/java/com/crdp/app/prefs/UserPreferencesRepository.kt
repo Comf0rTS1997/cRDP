@@ -18,9 +18,7 @@ import javax.inject.Singleton
 data class AppSettings(
     val touchAsMouse: Boolean = true,
     val hapticFeedback: Boolean = true,
-    val biometricUnlock: Boolean = false,
     val autoDisconnectIdle: Boolean = false,
-    val bandwidthProfile: String = "Adaptive",
     val defaultResolution: String = "Match device",
     val keyboardLayout: String = "US English",
     val autoLockVaultMinutes: Int = 5,
@@ -43,10 +41,13 @@ data class AppSettings(
     /** Default plain-text clipboard sync for connections that do not override (direct RDP). */
     val defaultClipboardSync: Boolean = true,
     /**
-     * When true, AndroidKeystore password keys require recent biometric authentication (30-second
-     * window) in addition to the UI-level VaultGate. Defaults to true for defence-in-depth.
+     * Single global toggle for credential storage. When true, [VaultEntry]s are persisted
+     * to an EncryptedFile (AES-256-GCM via the AndroidKeystore-backed MasterKey) AND the
+     * UI requires a biometric/device-credential unlock to view the vault or use a
+     * connection that references a vault entry. When false, entries are stored as
+     * plaintext JSON and no auth gate is presented anywhere.
      */
-    val requireBiometricToDecrypt: Boolean = true,
+    val vaultEncryption: Boolean = true,
 )
 
 object AudioModes {
@@ -69,7 +70,7 @@ object CameraModes {
     const val BACK = "Back camera"
     const val EXTERNAL = "External (USB)"
     const val SPECIFIC = "Specific device"
-    val OPTIONS = listOf(OFF, FRONT, BACK, EXTERNAL, SPECIFIC)
+    val OPTIONS = listOf(OFF, FRONT, BACK, EXTERNAL)
 }
 
 object ConnectionViewModes {
@@ -89,10 +90,6 @@ object RenderSamplingOptions {
     const val BILINEAR = "Bilinear"
     const val LANCZOS = "Lanczos3 (sharper)"
     val OPTIONS = listOf(NEAREST, BILINEAR, LANCZOS)
-}
-
-object BandwidthProfiles {
-    val OPTIONS = listOf("Adaptive", "LAN", "Cellular", "Custom")
 }
 
 object Resolutions {
@@ -150,9 +147,7 @@ class UserPreferencesRepository @Inject constructor(
     private val dynamicKey = booleanPreferencesKey("dynamic_color")
     private val touchAsMouseKey = booleanPreferencesKey("touch_as_mouse")
     private val hapticKey = booleanPreferencesKey("haptic_feedback")
-    private val biometricKey = booleanPreferencesKey("biometric_unlock")
     private val autoDisconnectKey = booleanPreferencesKey("auto_disconnect_idle")
-    private val bandwidthProfileKey = stringPreferencesKey("bandwidth_profile")
     private val defaultResolutionKey = stringPreferencesKey("default_resolution")
     private val keyboardLayoutKey = stringPreferencesKey("keyboard_layout")
     private val autoLockVaultKey = intPreferencesKey("auto_lock_vault_minutes")
@@ -169,7 +164,7 @@ class UserPreferencesRepository @Inject constructor(
     private val defaultCameraDeviceIdKey = stringPreferencesKey("default_camera_device_id")
     private val cameraEncodeKey = booleanPreferencesKey("camera_encode_h264")
     private val defaultClipboardSyncKey = booleanPreferencesKey("default_clipboard_sync")
-    private val requireBiometricToDecryptKey = booleanPreferencesKey("require_biometric_to_decrypt")
+    private val vaultEncryptionKey = booleanPreferencesKey("vault_encryption")
 
     val dynamicColor: Flow<Boolean> = context.userPrefs.data.map { prefs ->
         prefs[dynamicKey] ?: true
@@ -179,9 +174,7 @@ class UserPreferencesRepository @Inject constructor(
         AppSettings(
             touchAsMouse = prefs[touchAsMouseKey] ?: true,
             hapticFeedback = prefs[hapticKey] ?: true,
-            biometricUnlock = prefs[biometricKey] ?: false,
             autoDisconnectIdle = prefs[autoDisconnectKey] ?: false,
-            bandwidthProfile = prefs[bandwidthProfileKey] ?: "Adaptive",
             defaultResolution = prefs[defaultResolutionKey] ?: "Match device",
             keyboardLayout = prefs[keyboardLayoutKey] ?: "US English",
             autoLockVaultMinutes = prefs[autoLockVaultKey] ?: 5,
@@ -198,7 +191,7 @@ class UserPreferencesRepository @Inject constructor(
             defaultCameraDeviceId = prefs[defaultCameraDeviceIdKey]?.takeIf { it.isNotBlank() },
             cameraEncode = prefs[cameraEncodeKey] ?: true,
             defaultClipboardSync = prefs[defaultClipboardSyncKey] ?: true,
-            requireBiometricToDecrypt = prefs[requireBiometricToDecryptKey] ?: true,
+            vaultEncryption = prefs[vaultEncryptionKey] ?: true,
         )
     }
 
@@ -214,16 +207,8 @@ class UserPreferencesRepository @Inject constructor(
         context.userPrefs.edit { it[hapticKey] = value }
     }
 
-    suspend fun setBiometricUnlock(value: Boolean) {
-        context.userPrefs.edit { it[biometricKey] = value }
-    }
-
     suspend fun setAutoDisconnectIdle(value: Boolean) {
         context.userPrefs.edit { it[autoDisconnectKey] = value }
-    }
-
-    suspend fun setBandwidthProfile(value: String) {
-        context.userPrefs.edit { it[bandwidthProfileKey] = value }
     }
 
     suspend fun setDefaultResolution(value: String) {
@@ -303,8 +288,8 @@ class UserPreferencesRepository @Inject constructor(
         context.userPrefs.edit { it[defaultClipboardSyncKey] = value }
     }
 
-    suspend fun setRequireBiometricToDecrypt(value: Boolean) {
-        context.userPrefs.edit { it[requireBiometricToDecryptKey] = value }
+    suspend fun setVaultEncryption(value: Boolean) {
+        context.userPrefs.edit { it[vaultEncryptionKey] = value }
     }
 
     suspend fun removeCustomResolution(value: String) {

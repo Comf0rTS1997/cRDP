@@ -20,19 +20,19 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Monitor
 import androidx.compose.material.icons.filled.Mouse
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Vibration
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Videocam
-import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -67,7 +67,6 @@ import com.crdp.app.prefs.AudioModes
 import com.crdp.app.prefs.AudioQualities
 import com.crdp.app.prefs.CameraModes
 import com.crdp.app.prefs.AutoLockVault
-import com.crdp.app.prefs.BandwidthProfiles
 import com.crdp.app.prefs.DpiScales
 import com.crdp.app.prefs.KeyboardLayouts
 import com.crdp.app.prefs.RenderBackends
@@ -77,7 +76,6 @@ import com.crdp.app.R
 import kotlinx.coroutines.launch
 
 private sealed interface ChooserKind {
-    data object Bandwidth : ChooserKind
     data object Resolution : ChooserKind
     data object Keyboard : ChooserKind
     data object AutoLock : ChooserKind
@@ -98,10 +96,8 @@ fun SettingsScreen(
     appSettings: AppSettings,
     onTouchAsMouse: (Boolean) -> Unit,
     onHapticFeedback: (Boolean) -> Unit,
-    onBiometricUnlock: (Boolean) -> Unit,
-    onRequireBiometricToDecrypt: (Boolean) -> Unit,
+    onVaultEncryption: (Boolean) -> Unit,
     onAutoDisconnectIdle: (Boolean) -> Unit,
-    onBandwidthProfile: (String) -> Unit,
     onDefaultResolution: (String) -> Unit,
     onKeyboardLayout: (String) -> Unit,
     onAutoLockVaultMinutes: (Int) -> Unit,
@@ -117,8 +113,7 @@ fun SettingsScreen(
     onDefaultCameraMode: (String) -> Unit,
     onDefaultClipboardSync: (Boolean) -> Unit,
     onOpenVault: () -> Unit,
-    onOpenLicenses: () -> Unit,
-    versionLabel: String,
+    onOpenAbout: () -> Unit,
     onBack: () -> Unit,
 ) {
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
@@ -156,12 +151,6 @@ fun SettingsScreen(
 
             SectionHeader("Connection")
             SettingRow(
-                icon = Icons.Default.Wifi,
-                title = "Bandwidth profile",
-                value = appSettings.bandwidthProfile,
-                onClick = { chooser = ChooserKind.Bandwidth },
-            )
-            SettingRow(
                 icon = Icons.Default.Monitor,
                 title = "Default resolution",
                 value = appSettings.defaultResolution,
@@ -174,16 +163,16 @@ fun SettingsScreen(
                 onClick = { chooser = ChooserKind.Keyboard },
             )
             SettingRow(
-                icon = Icons.Default.Monitor,
+                icon = Icons.Default.PhoneAndroid,
                 title = "Default DPI scaling",
                 subtitle = "Server-side desktop scale for new connections",
                 value = DpiScales.label(appSettings.defaultDpiScale),
                 onClick = { chooser = ChooserKind.DefaultDpi },
             )
             SettingRow(
-                icon = Icons.Default.Monitor,
-                title = "DeX DPI scaling",
-                subtitle = "Used while the device is in Samsung DeX",
+                icon = Icons.Default.DesktopWindows,
+                title = "Desktop mode DPI scaling",
+                subtitle = "Used while the device is in desktop mode (e.g. Samsung DeX)",
                 value = DpiScales.label(appSettings.dexDpiScale),
                 onClick = { chooser = ChooserKind.DexDpi },
             )
@@ -260,17 +249,13 @@ fun SettingsScreen(
             SectionHeader("Security")
             SettingRow(
                 icon = Icons.Default.Lock,
-                title = "Biometric unlock",
-                trailing = { Switch(checked = appSettings.biometricUnlock, onCheckedChange = onBiometricUnlock) },
-            )
-            SettingRow(
-                icon = Icons.Default.Lock,
-                title = "Require biometric to decrypt credentials",
-                subtitle = "Biometric gates key access, not just the UI",
+                title = "Vault encryption",
+                subtitle = "On: vault stored encrypted, biometric/PIN required to use credentials.\n" +
+                    "Off: vault stored as plaintext, no auth check.",
                 trailing = {
                     Switch(
-                        checked = appSettings.requireBiometricToDecrypt,
-                        onCheckedChange = onRequireBiometricToDecrypt,
+                        checked = appSettings.vaultEncryption,
+                        onCheckedChange = onVaultEncryption,
                     )
                 },
             )
@@ -304,11 +289,10 @@ fun SettingsScreen(
             )
 
             SectionHeader("About")
-            SettingRow(icon = Icons.Default.Info, title = "cRDP", subtitle = versionLabel)
             SettingRow(
-                icon = Icons.Default.Folder,
-                title = "Open source licenses",
-                onClick = onOpenLicenses,
+                icon = Icons.Default.Info,
+                title = "About",
+                onClick = onOpenAbout,
             )
 
             Spacer(Modifier.height(24.dp))
@@ -330,12 +314,6 @@ fun SettingsScreen(
             sheetState = sheetState,
         ) {
             when (activeChooser) {
-                ChooserKind.Bandwidth -> ChooserList(
-                    title = "Bandwidth profile",
-                    options = BandwidthProfiles.OPTIONS,
-                    selected = appSettings.bandwidthProfile,
-                    onSelect = { onBandwidthProfile(it); dismiss() },
-                )
                 ChooserKind.Resolution -> ResolutionChooser(
                     builtIn = Resolutions.BUILT_IN,
                     custom = appSettings.customResolutions,
@@ -378,7 +356,7 @@ fun SettingsScreen(
                     onSelect = { onDefaultDpiScale(it); dismiss() },
                 )
                 ChooserKind.DexDpi -> DpiChooser(
-                    title = "DeX DPI scaling",
+                    title = "Desktop mode DPI scaling",
                     selected = appSettings.dexDpiScale,
                     onSelect = { onDexDpiScale(it); dismiss() },
                 )

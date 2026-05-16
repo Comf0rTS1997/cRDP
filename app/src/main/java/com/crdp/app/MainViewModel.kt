@@ -2,6 +2,7 @@ package com.crdp.app
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.crdp.app.data.VaultEncryptionState
 import com.crdp.app.prefs.AppSettings
 import com.crdp.app.prefs.AutoLockVault
 import com.crdp.app.prefs.UserPreferencesRepository
@@ -9,6 +10,8 @@ import com.crdp.core.rdp.model.ConnectionProfile
 import com.crdp.core.rdp.model.DirectConnectionProfile
 import com.crdp.core.rdp.model.GatewayConnectionProfile
 import com.crdp.core.rdp.repository.ProfileRepository
+import com.crdp.core.rdp.repository.VaultRepository
+import kotlinx.coroutines.flow.first
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -21,13 +24,32 @@ import javax.inject.Inject
 class MainViewModel @Inject constructor(
     private val userPreferencesRepository: UserPreferencesRepository,
     private val profileRepository: ProfileRepository,
+    private val vaultRepository: VaultRepository,
+    private val vaultEncryptionState: VaultEncryptionState,
 ) : ViewModel() {
+
+    init {
+        // The repository singleton needs the on-disk mode the moment any read happens.
+        // Hilt has already constructed prefs, but the encryption flag lives in DataStore
+        // (suspend), so seed the volatile mirror once on startup before any vault I/O.
+        viewModelScope.launch {
+            vaultEncryptionState.encrypted =
+                userPreferencesRepository.appSettings.first().vaultEncryption
+        }
+    }
 
     suspend fun getProfile(id: String): ConnectionProfile? = profileRepository.getById(id)
 
-    fun requireBiometric(profile: ConnectionProfile): Boolean = when (profile) {
-        is DirectConnectionProfile -> profile.requireBiometric
-        is GatewayConnectionProfile -> profile.requireBiometric
+    /**
+     * True when the connection references a vault entry that holds credentials — the
+     * only case where the UI biometric gate actually has something to guard. Profiles
+     * with no vault link (gateway, or direct without saved credentials) skip the prompt.
+     */
+    suspend fun referencesVaultCredentials(profile: ConnectionProfile): Boolean {
+        if (profile !is DirectConnectionProfile) return false
+        val entryId = profile.vaultEntryId ?: return false
+        val entry = vaultRepository.getById(entryId) ?: return false
+        return entry.password.isNotEmpty() || entry.username.isNotEmpty()
     }
 
     val dynamicColor = userPreferencesRepository.dynamicColor.stateIn(
@@ -54,16 +76,8 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch { userPreferencesRepository.setHapticFeedback(value) }
     }
 
-    fun setBiometricUnlock(value: Boolean) {
-        viewModelScope.launch { userPreferencesRepository.setBiometricUnlock(value) }
-    }
-
     fun setAutoDisconnectIdle(value: Boolean) {
         viewModelScope.launch { userPreferencesRepository.setAutoDisconnectIdle(value) }
-    }
-
-    fun setBandwidthProfile(value: String) {
-        viewModelScope.launch { userPreferencesRepository.setBandwidthProfile(value) }
     }
 
     fun setDefaultResolution(value: String) {
@@ -131,14 +145,15 @@ class MainViewModel @Inject constructor(
     }
 
     /**
-     * Persists the new preference and re-keys all stored passwords to match.
-     * Should be called while the biometric auth window is still valid (i.e. shortly after
-     * the user authenticated via VaultGate) so that keys bound to biometric can be read.
+     * Persists the new global vault-encryption preference AND rewrites the on-disk
+     * vault file in the matching format. When toggling off, entries become plaintext
+     * JSON; toggling back on re-wraps them in EncryptedFile.
      */
-    fun setRequireBiometricToDecrypt(value: Boolean) {
+    fun setVaultEncryption(value: Boolean) {
         viewModelScope.launch {
-            userPreferencesRepository.setRequireBiometricToDecrypt(value)
-            profileRepository.rekeyAllPasswords(value)
+            userPreferencesRepository.setVaultEncryption(value)
+            vaultRepository.setEncryption(value)
+            vaultEncryptionState.encrypted = value
         }
     }
 

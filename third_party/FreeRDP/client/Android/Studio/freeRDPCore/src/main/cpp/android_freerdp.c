@@ -29,6 +29,7 @@
 #include <freerdp/codec/rfx.h>
 #include <freerdp/gdi/gdi.h>
 #include <freerdp/gdi/gfx.h>
+#include <freerdp/client.h>
 #include <freerdp/client/rdpei.h>
 #include <freerdp/client/rdpgfx.h>
 #include <freerdp/client/cliprdr.h>
@@ -1034,6 +1035,34 @@ Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1cursor_1event(
 	}
 
 	WLog_DBG(TAG, "send_cursor_event: (%d, %d), %d", x, y, flags);
+	return JNI_TRUE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_freerdp_freerdpcore_services_LibFreeRDP_freerdp_1send_1touch_1contact(JNIEnv* env,
+                                                                               jclass cls,
+                                                                               jlong instance,
+                                                                               jint flags,
+                                                                               jint finger,
+                                                                               jint pressure,
+                                                                               jint x,
+                                                                               jint y)
+{
+	freerdp* inst = (freerdp*)instance;
+	androidContext* afc;
+	rdpClientContext* cctx;
+
+	(void)env;
+	(void)cls;
+	if (!inst || !inst->context)
+		return JNI_FALSE;
+
+	afc = (androidContext*)inst->context;
+	cctx = &afc->common;
+
+	if (!freerdp_client_handle_touch(cctx, (UINT32)flags, (INT32)finger, (UINT32)pressure,
+	                                 (INT32)x, (INT32)y))
+		return JNI_FALSE;
 	return JNI_TRUE;
 }
 

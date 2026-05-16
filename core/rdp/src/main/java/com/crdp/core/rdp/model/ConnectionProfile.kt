@@ -25,12 +25,20 @@ data class DirectConnectionProfile(
     override val displayName: String,
     val host: String,
     val port: Int = 3389,
+    /**
+     * Reference to a [VaultEntry] in the credential vault. When non-null and the
+     * entry exists, [username]/[domain]/[password] are populated from it at load
+     * time; saving back to the repo nulls out the inline fields. Kept nullable
+     * for the legacy inline-credentials path used during migration.
+     */
+    val vaultEntryId: String? = null,
     val username: String = "",
     val domain: String? = null,
     val password: String = "",
     val width: Int = 1280,
     val height: Int = 720,
     val colorDepth: Int = 32,
+    /** Legacy per-profile biometric flag. Replaced by global [vaultEncryption]; kept for migration. */
     val requireBiometric: Boolean = false,
     val autoResolution: Boolean = false,
     /**

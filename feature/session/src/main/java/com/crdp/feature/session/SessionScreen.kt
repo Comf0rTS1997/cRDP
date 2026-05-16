@@ -10,6 +10,7 @@ import android.view.MotionEvent
 import android.view.KeyEvent as AndroidKeyEvent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -35,6 +36,7 @@ import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Monitor
 import androidx.compose.material.icons.filled.Mouse
+import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -63,8 +65,10 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInput
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -93,6 +97,8 @@ import com.crdp.core.rdp.input.KeyAction
 import com.crdp.core.rdp.input.KeyEventPayload
 import com.crdp.core.rdp.input.PointerAction
 import com.crdp.core.rdp.input.PointerEvent
+import com.crdp.core.rdp.input.RemoteTouchPhase
+import com.crdp.core.rdp.input.TouchContact
 import com.crdp.core.rdp.model.AudioMode
 import com.crdp.core.rdp.model.AudioQuality
 import com.crdp.core.rdp.model.ConnectionProfile
@@ -459,11 +465,33 @@ private fun SessionScreen(
     // Virtual cursor position in RDP space (used in Trackpad mode).
     var cursorX by remember { mutableStateOf(rdpW / 2f) }
     var cursorY by remember { mutableStateOf(rdpH / 2f) }
-    var lastFingerX by remember { mutableStateOf(0f) }
-    var lastFingerY by remember { mutableStateOf(0f) }
-    var fingerDownX by remember { mutableStateOf(0f) }
-    var fingerDownY by remember { mutableStateOf(0f) }
     val tapThresholdPx = with(density) { 12.dp.toPx() }
+    // ~12dp of finger travel = one wheel detent.
+    val scrollPxPerDetent = with(density) { 12.dp.toPx() }
+    // ~24dp change in finger spread = one Ctrl+wheel zoom step.
+    val pinchPxPerDetent = with(density) { 24.dp.toPx() }
+    // Trackpad: a second tap that starts within this window of the first tap's UP,
+    // close to the first tap's location, becomes "tap-and-a-half" → drag.
+    val doubleTapDragWindowMs = 300L
+    val doubleTapDragMaxOffsetPx = with(density) { 32.dp.toPx() }
+    // Trackpad two-finger tap (right-click) constraints.
+    val twoFingerTapMaxDurationMs = 350L
+    val twoFingerTapMaxMovePx = with(density) { 16.dp.toPx() }
+    // DirectTouch long-press / double-tap constants.
+    val longPressTimeoutMs = 500L
+    val doubleTapWindowMs = 300L
+    val doubleTapMaxMoveRdp = 32f
+    // Records the time of the last single-finger tap UP so a follow-up Down can
+    // promote into a tap-and-a-half drag. Persisted across gesture-loop iterations.
+    val trackpadLastTapMs = remember { mutableStateOf(0L) }
+    val trackpadLastTapX = remember { mutableStateOf(0f) }
+    val trackpadLastTapY = remember { mutableStateOf(0f) }
+    val directTouchLastTapMs = remember { mutableStateOf(0L) }
+    val directTouchLastTapRdpX = remember { mutableStateOf(0f) }
+    val directTouchLastTapRdpY = remember { mutableStateOf(0f) }
+    val rdpeiSupported = remember { mutableStateOf(true) }
+    val rdpeiFingerIds = remember { mutableStateOf(mutableMapOf<Long, Int>()) }
+    val rdpeiNextFingerId = remember { mutableStateOf(0) }
 
     // Tracks the previous MotionEvent.buttonState bitmask so we can emit Up/Down
     // transitions for left/right/middle separately when a hardware mouse delivers
@@ -551,7 +579,9 @@ private fun SessionScreen(
             for ((mask, id) in MOUSE_BUTTONS) {
                 if ((changed and mask) != 0) {
                     val pressed = (curButtons and mask) != 0
-                    if (pressed) haptic(HapticFeedbackConstants.VIRTUAL_KEY)
+                    // Mouse / touchpad / stylus button events must NOT vibrate — the buzz
+                    // is only sensible for touchscreen taps, which arrive via the Compose
+                    // pointerInput path below.
                     port.onPointerEvent(
                         PointerEvent(
                             x = cursorX,
@@ -598,6 +628,10 @@ private fun SessionScreen(
     // wiring). Don't pull it onto the Compose root — see the focusable() comment
     // on BoxWithConstraints below.
 
+    // Hoisted up — the brightness DisposableEffect and clipboard focus push below
+    // both gate on a live session before sessionConnected was previously declared.
+    val sessionConnected = sessionState is SessionState.Connected
+
     LaunchedEffect(isFullscreen) {
         val activity = context as? Activity ?: return@LaunchedEffect
         val controller = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
@@ -638,7 +672,61 @@ private fun SessionScreen(
     //    capture). Mouse button events do NOT come through this path.
     //  - Compose pointerInput below: source-routed to MOUSE for the button-press
     //    fallback on devices without pointer capture support.
-    val sessionConnected = sessionState is SessionState.Connected
+    // (sessionConnected hoisted earlier; reuse the same val here.)
+
+    // On a fresh connect the SurfaceView is already attached and the window already
+    // focused, so onAttachedToWindow / onWindowFocusChanged don't refire. The
+    // AndroidView `update` block makes a single requestPointerCapture attempt, but
+    // DeX sometimes silently drops the first request while the WindowManager is still
+    // settling — and the user is then stuck having to press Esc and click the surface
+    // to coax capture into engaging. Retry on a short cadence until capture lands or
+    // the budget elapses.
+    LaunchedEffect(sessionConnected) {
+        if (!sessionConnected) return@LaunchedEffect
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return@LaunchedEffect
+        repeat(8) {
+            val surf = rdpSurfaceRef.value ?: return@repeat
+            if (surf.hasPointerCapture()) return@LaunchedEffect
+            surf.captureOnFocus = true
+            surf.requestFocus()
+            runCatching { surf.requestPointerCapture() }
+            delay(100L)
+        }
+    }
+
+    // Phone → Windows clipboard sync. Android's OnPrimaryClipChangedListener (engine-
+    // side) is unreliable when the clipboard write came from a different app, esp. on
+    // Samsung One UI 8 / Android 16 where background visibility is silenced. Push the
+    // current clipboard contents to FreeRDP whenever the activity regains window focus,
+    // which is when the user has just come back from the app they copied from.
+    val activityForClipboard = context as? Activity
+    DisposableEffect(sessionConnected, activityForClipboard) {
+        if (!sessionConnected || activityForClipboard == null) {
+            return@DisposableEffect onDispose { }
+        }
+        val cm = activityForClipboard.getSystemService(Context.CLIPBOARD_SERVICE)
+            as? android.content.ClipboardManager
+        fun pushNow() {
+            val clip = runCatching { cm?.primaryClip }.getOrNull() ?: return
+            if (clip.itemCount <= 0) return
+            val text = runCatching {
+                clip.getItemAt(0).coerceToText(activityForClipboard)?.toString()
+            }.getOrNull()
+            if (!text.isNullOrEmpty()) port.pushLocalClipboard(text)
+        }
+        // Initial push on connect — the user may already have something on their
+        // clipboard from before launching the session.
+        pushNow()
+        val listener = android.view.ViewTreeObserver.OnWindowFocusChangeListener { hasFocus ->
+            if (hasFocus) pushNow()
+        }
+        val vto = view.viewTreeObserver
+        vto.addOnWindowFocusChangeListener(listener)
+        onDispose {
+            val live = view.viewTreeObserver
+            if (live.isAlive) live.removeOnWindowFocusChangeListener(listener)
+        }
+    }
 
     // Stable wrapper closing over `port`/`transform`/etc. — called both from the
     // Activity-level dispatchKeyEvent hook (the primary path, which sees keys
@@ -766,149 +854,607 @@ private fun SessionScreen(
             // via AndroidView) to win key focus so its dispatchKeyEventPreIme and
             // pointer-capture lifecycle fire. Activity-level dispatchKeyEvent
             // covers the keyboard fallback. A focusable Compose root steals focus
-            // away from the SurfaceView, breaking pointer capture in immersive
-            // fullscreen (no system bars to trigger a focus regain → no recovery).
             .pointerInput(port, inputMode, transform) {
                 awaitPointerEventScope {
                     while (true) {
-                        val event = awaitPointerEvent(PointerEventPass.Main)
-                        // Hardware mouse + stylus go through setOnCapturedPointerListener /
-                        // setOnGenericMotionListener on the host View. If any pointer in
-                        // this Compose event isn't of type Touch, drop the whole event so
-                        // we don't double-dispatch through the touchscreen path.
-                        if (event.changes.any { it.type != PointerType.Touch }) continue
-                        event.changes.forEach { change ->
-                            // Skip touches that land on the floating dock.
-                            val bounds = dockBoundsRef.value
-                            if (bounds != null && bounds.contains(change.position)) return@forEach
-                            if (change.isConsumed) return@forEach
-                            val rawAction = when {
-                                change.pressed && !change.previousPressed -> PointerAction.Down
-                                !change.pressed && change.previousPressed -> PointerAction.Up
-                                change.previousPressed -> PointerAction.Move
-                                else -> PointerAction.Hover
-                            }
+                        // Wait for the first finger to land. Anything that isn't a touchscreen
+                        // contact (mouse, stylus) goes through setOnGenericMotionListener and the
+                        // captured-pointer path on the RdpSurfaceView, NOT this loop.
+                        val firstDown = awaitFirstDown(
+                            requireUnconsumed = false,
+                            pass = PointerEventPass.Main,
+                        )
+                        if (firstDown.type != PointerType.Touch) continue
+                        val dockBoundsAtStart = dockBoundsRef.value
+                        if (dockBoundsAtStart != null && dockBoundsAtStart.contains(firstDown.position)) {
+                            continue
+                        }
+                        firstDown.consume()
 
-                            // Any touch reaching the RDP surface collapses an edge-expanded dock.
-                            // It also re-engages pointer capture if a prior ESC released it
-                            // (this is the "tap surface to recapture" cue from the snackbar).
-                            if (rawAction == PointerAction.Down) {
-                                isEdgeExpandedState.value = false
-                                val surf = rdpSurfaceRef.value
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-                                    sessionConnected &&
-                                    surf != null &&
-                                    !surf.hasPointerCapture()
-                                ) {
-                                    surf.captureOnFocus = true
-                                    surf.requestFocus()
-                                    runCatching { surf.requestPointerCapture() }
-                                }
-                            }
+                        // Touching the surface collapses the edge-expanded dock and
+                        // re-engages pointer capture after an ESC release.
+                        isEdgeExpandedState.value = false
+                        val surf0 = rdpSurfaceRef.value
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                            sessionConnected &&
+                            surf0 != null &&
+                            !surf0.hasPointerCapture()
+                        ) {
+                            surf0.captureOnFocus = true
+                            surf0.requestFocus()
+                            runCatching { surf0.requestPointerCapture() }
+                        }
 
-                            when (inputMode) {
-                                InputMode.Trackpad -> {
-                                    when (rawAction) {
-                                        PointerAction.Down -> {
-                                            haptic(HapticFeedbackConstants.VIRTUAL_KEY)
-                                            markInteraction()
-                                            lastFingerX = change.position.x
-                                            lastFingerY = change.position.y
-                                            fingerDownX = change.position.x
-                                            fingerDownY = change.position.y
-                                            // Sync server cursor to our virtual position.
-                                            port.onPointerEvent(
-                                                PointerEvent(
-                                                    x = cursorX,
-                                                    y = cursorY,
-                                                    action = PointerAction.Hover,
-                                                    buttons = 0,
-                                                    wheelDelta = 0f,
-                                                ),
-                                            )
-                                        }
-                                        PointerAction.Move -> {
-                                            markInteraction()
-                                            val dx = change.position.x - lastFingerX
-                                            val dy = change.position.y - lastFingerY
-                                            lastFingerX = change.position.x
-                                            lastFingerY = change.position.y
-                                            if (transform.scale > 0f) {
-                                                cursorX = (cursorX + dx / transform.scale)
-                                                    .coerceIn(0f, rdpW.toFloat())
-                                                cursorY = (cursorY + dy / transform.scale)
-                                                    .coerceIn(0f, rdpH.toFloat())
-                                            }
-                                            port.onPointerEvent(
-                                                PointerEvent(
-                                                    x = cursorX,
-                                                    y = cursorY,
-                                                    action = PointerAction.Move,
-                                                    buttons = 1,
-                                                    wheelDelta = 0f,
-                                                ),
-                                            )
-                                        }
-                                        PointerAction.Up -> {
-                                            markInteraction()
-                                            val totalDx = abs(change.position.x - fingerDownX)
-                                            val totalDy = abs(change.position.y - fingerDownY)
-                                            if (totalDx < tapThresholdPx && totalDy < tapThresholdPx) {
-                                                // Tap = left click at virtual cursor position.
-                                                port.onPointerEvent(
-                                                    PointerEvent(
-                                                        x = cursorX,
-                                                        y = cursorY,
-                                                        action = PointerAction.Down,
-                                                        buttons = 1,
-                                                        wheelDelta = 0f,
-                                                    ),
-                                                )
-                                                port.onPointerEvent(
-                                                    PointerEvent(
-                                                        x = cursorX,
-                                                        y = cursorY,
-                                                        action = PointerAction.Up,
-                                                        buttons = 1,
-                                                        wheelDelta = 0f,
-                                                    ),
-                                                )
-                                            }
-                                        }
-                                        PointerAction.Hover -> {
-                                            // Finger hover doesn't fire on touchscreens; ignore.
-                                        }
+                        val gestureDownMs = System.currentTimeMillis()
+                        val primaryId: PointerId = firstDown.id
+                        val downPos = firstDown.position
+                        haptic(HapticFeedbackConstants.VIRTUAL_KEY)
+                        markInteraction()
+
+                        // ── DirectTouch: pure RDPEI pass-through ──────────────
+                        // The Windows touch input stack (Tablet PC Input Service)
+                        // expects raw touch contacts. It synthesizes mouse clicks
+                        // for non-touch-aware apps, fires press-and-hold → right-
+                        // click, and runs the OS-level gesture engine (two-finger
+                        // pan → scroll, pinch → zoom, etc.). Emitting mouse OR
+                        // keyboard events from this code path races with that
+                        // synth and breaks gesture recognition — so DirectTouch
+                        // mode goes through ONE channel only: onTouchContacts().
+                        if (inputMode == InputMode.DirectTouch) {
+                            val activeFingerIds = mutableMapOf<Long, Int>()
+                            fun newFingerId(): Int {
+                                val id = rdpeiNextFingerId.value
+                                rdpeiNextFingerId.value = (id + 1) and 0x7F
+                                return id
+                            }
+                            // Register the first finger.
+                            val firstFid = newFingerId()
+                            activeFingerIds[primaryId.value] = firstFid
+                            val (rxd, ryd) = transform.toRdp(downPos.x, downPos.y)
+                            val firstOk = port.onTouchContacts(
+                                listOf(
+                                    TouchContact(
+                                        fingerId = firstFid,
+                                        x = rxd.coerceIn(0f, rdpW.toFloat()).roundToInt(),
+                                        y = ryd.coerceIn(0f, rdpH.toFloat()).roundToInt(),
+                                        phase = RemoteTouchPhase.Down,
+                                        pressure = 1024,
+                                    ),
+                                ),
+                            )
+                            if (!firstOk) rdpeiSupported.value = false
+
+                            while (activeFingerIds.isNotEmpty()) {
+                                val event = awaitPointerEvent(PointerEventPass.Main)
+                                val contacts = mutableListOf<TouchContact>()
+                                for (c in event.changes) {
+                                    val key = c.id.value
+                                    val isNew = c.pressed && !c.previousPressed
+                                    val isLifted = !c.pressed && c.previousPressed
+                                    if (!isNew && !isLifted && !c.pressed) continue
+                                    val fid = if (isNew) {
+                                        activeFingerIds.getOrPut(key) { newFingerId() }
+                                    } else {
+                                        activeFingerIds[key] ?: continue
                                     }
-                                }
-
-                                InputMode.DirectTouch -> {
-                                    val (rdpX, rdpY) = transform.toRdp(
-                                        change.position.x,
-                                        change.position.y,
+                                    val phase = when {
+                                        isNew -> RemoteTouchPhase.Down
+                                        isLifted -> RemoteTouchPhase.Up
+                                        else -> RemoteTouchPhase.Move
+                                    }
+                                    val (rx, ry) = transform.toRdp(c.position.x, c.position.y)
+                                    contacts += TouchContact(
+                                        fingerId = fid,
+                                        x = rx.coerceIn(0f, rdpW.toFloat()).roundToInt(),
+                                        y = ry.coerceIn(0f, rdpH.toFloat()).roundToInt(),
+                                        phase = phase,
+                                        pressure = if (phase == RemoteTouchPhase.Up) 0 else 1024,
                                     )
-                                    val clampedX = rdpX.coerceIn(0f, rdpW.toFloat())
-                                    val clampedY = rdpY.coerceIn(0f, rdpH.toFloat())
+                                    if (isLifted) activeFingerIds.remove(key)
+                                    if (c.pressed) c.consume()
+                                }
+                                if (contacts.isNotEmpty()) {
+                                    markInteraction()
+                                    val ok = port.onTouchContacts(contacts)
+                                    if (!ok) rdpeiSupported.value = false
+                                }
+                            }
+                            continue
+                        }
 
-                                    if (rawAction == PointerAction.Down) {
-                                        haptic(HapticFeedbackConstants.VIRTUAL_KEY)
-                                        markInteraction()
-                                    } else if (rawAction == PointerAction.Up || rawAction == PointerAction.Move) {
-                                        markInteraction()
+                        // ── Trackpad: cursor-model gesture handling ───────────
+                        // Trackpad-only: a quick second tap close to the first tap's location
+                        // promotes into a "tap-and-a-half" drag (left button held while the
+                        // finger moves), the universal trackpad drag gesture.
+                        val isTrackpad = inputMode == InputMode.Trackpad
+                        val tapAndHalf = if (isTrackpad) {
+                            val gap = gestureDownMs - trackpadLastTapMs.value
+                            val nearX = abs(downPos.x - trackpadLastTapX.value) < doubleTapDragMaxOffsetPx
+                            val nearY = abs(downPos.y - trackpadLastTapY.value) < doubleTapDragMaxOffsetPx
+                            val ok = gap in 1..doubleTapDragWindowMs && nearX && nearY
+                            if (ok) trackpadLastTapMs.value = 0L
+                            ok
+                        } else false
+                        var trackpadDragHeld = tapAndHalf
+                        if (isTrackpad) {
+                            // Park the server cursor at our virtual cursor (so the click that
+                            // we eventually emit lands on the right pixel).
+                            port.onPointerEvent(
+                                PointerEvent(cursorX, cursorY, PointerAction.Hover, 0, 0f),
+                            )
+                            if (trackpadDragHeld) {
+                                haptic(HapticFeedbackConstants.LONG_PRESS)
+                                port.onPointerEvent(
+                                    PointerEvent(cursorX, cursorY, PointerAction.Down, 1, 0f),
+                                )
+                            }
+                        }
+
+                        // ── Mutable per-gesture state ───────────────────────
+                        var primaryPos = downPos
+                        var lastFingerPos = downPos
+                        var secondId: PointerId? = null
+                        var secondPos = androidx.compose.ui.geometry.Offset.Zero
+                        var twoFingerEntered = false
+                        var twoFingerScrolled = false
+                        var twoFingerStartCentroid = androidx.compose.ui.geometry.Offset.Zero
+                        var twoFingerStartTimeMs = 0L
+                        var twoFingerLastCentroid = androidx.compose.ui.geometry.Offset.Zero
+                        var twoFingerLastDist = 0f
+                        var scrollAccumX = 0f
+                        var scrollAccumY = 0f
+                        var pinchAccum = 0f
+                        var ctrlHeld = false
+                        var directTouchDragStarted = false
+                        var directTouchLongPressFired = false
+                        var totalMoveAbsX = 0f
+                        var totalMoveAbsY = 0f
+                        var rdpeiPrimaryFingerId = -1
+                        if (inputMode == InputMode.DirectTouch && rdpeiSupported.value) {
+                            val id = rdpeiNextFingerId.value
+                            rdpeiNextFingerId.value = (id + 1) and 0x7F
+                            rdpeiFingerIds.value[primaryId.value] = id
+                            rdpeiPrimaryFingerId = id
+                            val (rxd, ryd) = transform.toRdp(downPos.x, downPos.y)
+                            val ok = port.onTouchContacts(
+                                listOf(
+                                    TouchContact(
+                                        fingerId = id,
+                                        x = rxd.coerceIn(0f, rdpW.toFloat()).roundToInt(),
+                                        y = ryd.coerceIn(0f, rdpH.toFloat()).roundToInt(),
+                                        phase = RemoteTouchPhase.Down,
+                                        pressure = 1024,
+                                    ),
+                                ),
+                            )
+                            if (!ok) rdpeiSupported.value = false
+                        }
+
+                        // ── Gesture loop ─────────────────────────────────────
+                        var gestureDone = false
+                        while (!gestureDone) {
+                            // For DirectTouch single-finger, race the next pointer event
+                            // against the long-press deadline so a stationary finger fires
+                            // right-click without needing a sample.
+                            val canLongPress = inputMode == InputMode.DirectTouch &&
+                                !directTouchLongPressFired &&
+                                !directTouchDragStarted &&
+                                !twoFingerEntered
+                            val event = if (canLongPress) {
+                                val deadline = gestureDownMs + longPressTimeoutMs
+                                val waitMs = (deadline - System.currentTimeMillis()).coerceAtLeast(0L)
+                                withTimeoutOrNull(waitMs) {
+                                    awaitPointerEvent(PointerEventPass.Main)
+                                }
+                            } else {
+                                awaitPointerEvent(PointerEventPass.Main)
+                            }
+
+                            if (event == null) {
+                                // Long-press timeout fired with no further pointer activity.
+                                directTouchLongPressFired = true
+                                haptic(HapticFeedbackConstants.LONG_PRESS)
+                                val (lrx, lry) = transform.toRdp(downPos.x, downPos.y)
+                                val lcx = lrx.coerceIn(0f, rdpW.toFloat())
+                                val lcy = lry.coerceIn(0f, rdpH.toFloat())
+                                port.onPointerEvent(
+                                    PointerEvent(lcx, lcy, PointerAction.Hover, 0, 0f),
+                                )
+                                port.onPointerEvent(
+                                    PointerEvent(lcx, lcy, PointerAction.Down, 2, 0f),
+                                )
+                                port.onPointerEvent(
+                                    PointerEvent(lcx, lcy, PointerAction.Up, 2, 0f),
+                                )
+                                continue
+                            }
+
+                            // Detect a new finger going down (becomes the 2nd contact).
+                            for (c in event.changes) {
+                                if (c.pressed && !c.previousPressed && c.id != primaryId &&
+                                    secondId == null
+                                ) {
+                                    val db = dockBoundsRef.value
+                                    if (db != null && db.contains(c.position)) continue
+                                    secondId = c.id
+                                    secondPos = c.position
+                                    twoFingerEntered = true
+                                    val startCx = (primaryPos.x + secondPos.x) / 2f
+                                    val startCy = (primaryPos.y + secondPos.y) / 2f
+                                    twoFingerStartCentroid = androidx.compose.ui.geometry.Offset(startCx, startCy)
+                                    twoFingerLastCentroid = twoFingerStartCentroid
+                                    val ddx = secondPos.x - primaryPos.x
+                                    val ddy = secondPos.y - primaryPos.y
+                                    twoFingerLastDist = kotlin.math.sqrt((ddx * ddx + ddy * ddy).toDouble()).toFloat()
+                                    twoFingerStartTimeMs = System.currentTimeMillis()
+                                    scrollAccumX = 0f
+                                    scrollAccumY = 0f
+                                    pinchAccum = 0f
+                                    twoFingerScrolled = false
+
+                                    // If a DirectTouch single-finger drag was already in
+                                    // flight, lift the mouse button so it doesn't get stuck.
+                                    if (directTouchDragStarted) {
+                                        val (urx, ury) = transform.toRdp(primaryPos.x, primaryPos.y)
+                                        port.onPointerEvent(
+                                            PointerEvent(
+                                                urx.coerceIn(0f, rdpW.toFloat()),
+                                                ury.coerceIn(0f, rdpH.toFloat()),
+                                                PointerAction.Up, 1, 0f,
+                                            ),
+                                        )
+                                        directTouchDragStarted = false
                                     }
 
-                                    port.onPointerEvent(
-                                        PointerEvent(
-                                            x = clampedX,
-                                            y = clampedY,
-                                            action = rawAction,
-                                            buttons = if (change.pressed) 1 else 0,
-                                            wheelDelta = 0f,
+                                    if (inputMode == InputMode.DirectTouch && rdpeiSupported.value) {
+                                        val id = rdpeiNextFingerId.value
+                                        rdpeiNextFingerId.value = (id + 1) and 0x7F
+                                        rdpeiFingerIds.value[c.id.value] = id
+                                        val (rxs, rys) = transform.toRdp(c.position.x, c.position.y)
+                                        val ok = port.onTouchContacts(
+                                            listOf(
+                                                TouchContact(
+                                                    fingerId = id,
+                                                    x = rxs.coerceIn(0f, rdpW.toFloat()).roundToInt(),
+                                                    y = rys.coerceIn(0f, rdpH.toFloat()).roundToInt(),
+                                                    phase = RemoteTouchPhase.Down,
+                                                    pressure = 1024,
+                                                ),
+                                            ),
+                                        )
+                                        if (!ok) rdpeiSupported.value = false
+                                    }
+                                    haptic(HapticFeedbackConstants.VIRTUAL_KEY)
+                                    c.consume()
+                                }
+                            }
+
+                            // Update cached positions; consume changes we own.
+                            for (c in event.changes) {
+                                when (c.id) {
+                                    primaryId -> primaryPos = c.position
+                                    secondId -> secondPos = c.position
+                                }
+                                if (c.pressed) c.consume()
+                            }
+
+                            val pressedCount = event.changes.count { it.pressed }
+
+                            if (twoFingerEntered && pressedCount >= 2) {
+                                // Two-finger pan + (DirectTouch) pinch.
+                                val cx = (primaryPos.x + secondPos.x) / 2f
+                                val cy = (primaryPos.y + secondPos.y) / 2f
+                                val ddx = secondPos.x - primaryPos.x
+                                val ddy = secondPos.y - primaryPos.y
+                                val dist = kotlin.math.sqrt((ddx * ddx + ddy * ddy).toDouble()).toFloat()
+                                val dcx = cx - twoFingerLastCentroid.x
+                                val dcy = cy - twoFingerLastCentroid.y
+                                val ddist = dist - twoFingerLastDist
+                                twoFingerLastCentroid = androidx.compose.ui.geometry.Offset(cx, cy)
+                                twoFingerLastDist = dist
+                                scrollAccumX += dcx
+                                scrollAccumY += dcy
+                                pinchAccum += ddist
+
+                                val panMag = abs(dcx) + abs(dcy)
+                                val pinchMag = abs(ddist)
+                                val pinchPath = inputMode == InputMode.DirectTouch && pinchMag > panMag * 1.2f
+
+                                val anchorX: Float
+                                val anchorY: Float
+                                if (isTrackpad) {
+                                    anchorX = cursorX
+                                    anchorY = cursorY
+                                } else {
+                                    val (rx, ry) = transform.toRdp(cx, cy)
+                                    anchorX = rx.coerceIn(0f, rdpW.toFloat())
+                                    anchorY = ry.coerceIn(0f, rdpH.toFloat())
+                                }
+
+                                if (pinchPath) {
+                                    while (abs(pinchAccum) >= pinchPxPerDetent) {
+                                        val sign = if (pinchAccum > 0) 1f else -1f
+                                        pinchAccum -= sign * pinchPxPerDetent
+                                        if (!ctrlHeld) {
+                                            port.onKeyEvent(
+                                                KeyEventPayload(
+                                                    keyCode = android.view.KeyEvent.KEYCODE_CTRL_LEFT,
+                                                    metaState = android.view.KeyEvent.META_CTRL_ON or
+                                                        android.view.KeyEvent.META_CTRL_LEFT_ON,
+                                                    action = KeyAction.Down,
+                                                ),
+                                            )
+                                            ctrlHeld = true
+                                        }
+                                        port.onPointerEvent(
+                                            PointerEvent(
+                                                anchorX, anchorY,
+                                                PointerAction.Hover, 0, sign * 120f,
+                                            ),
+                                        )
+                                        twoFingerScrolled = true
+                                    }
+                                } else {
+                                    // Vertical scroll: finger drag down → wheel scrolls down.
+                                    // Windows wheel-down is negative.
+                                    while (abs(scrollAccumY) >= scrollPxPerDetent) {
+                                        val sign = if (scrollAccumY > 0) -1f else 1f
+                                        scrollAccumY -= -sign * scrollPxPerDetent
+                                        port.onPointerEvent(
+                                            PointerEvent(
+                                                anchorX, anchorY,
+                                                PointerAction.Hover, 0, sign * 120f,
+                                            ),
+                                        )
+                                        twoFingerScrolled = true
+                                    }
+                                    while (abs(scrollAccumX) >= scrollPxPerDetent) {
+                                        val sign = if (scrollAccumX > 0) 1f else -1f
+                                        scrollAccumX -= sign * scrollPxPerDetent
+                                        port.onPointerEvent(
+                                            PointerEvent(
+                                                x = anchorX,
+                                                y = anchorY,
+                                                action = PointerAction.Hover,
+                                                buttons = 0,
+                                                wheelDelta = 0f,
+                                                wheelDeltaH = sign * 120f,
+                                            ),
+                                        )
+                                        twoFingerScrolled = true
+                                    }
+                                }
+
+                                // Forward both contacts via RDPEI Move.
+                                if (inputMode == InputMode.DirectTouch && rdpeiSupported.value) {
+                                    val pFid = rdpeiFingerIds.value[primaryId.value] ?: 0
+                                    val sFid = secondId?.let { rdpeiFingerIds.value[it.value] } ?: 0
+                                    val (rxp, ryp) = transform.toRdp(primaryPos.x, primaryPos.y)
+                                    val (rxs, rys) = transform.toRdp(secondPos.x, secondPos.y)
+                                    val ok = port.onTouchContacts(
+                                        listOf(
+                                            TouchContact(
+                                                fingerId = pFid,
+                                                x = rxp.coerceIn(0f, rdpW.toFloat()).roundToInt(),
+                                                y = ryp.coerceIn(0f, rdpH.toFloat()).roundToInt(),
+                                                phase = RemoteTouchPhase.Move,
+                                                pressure = 1024,
+                                            ),
+                                            TouchContact(
+                                                fingerId = sFid,
+                                                x = rxs.coerceIn(0f, rdpW.toFloat()).roundToInt(),
+                                                y = rys.coerceIn(0f, rdpH.toFloat()).roundToInt(),
+                                                phase = RemoteTouchPhase.Move,
+                                                pressure = 1024,
+                                            ),
                                         ),
                                     )
+                                    if (!ok) rdpeiSupported.value = false
                                 }
+                            } else if (pressedCount == 1 && !twoFingerEntered) {
+                                // Single-finger handling (cursor drag or mouse drag).
+                                val dx = primaryPos.x - lastFingerPos.x
+                                val dy = primaryPos.y - lastFingerPos.y
+                                lastFingerPos = primaryPos
+                                totalMoveAbsX = abs(primaryPos.x - downPos.x)
+                                totalMoveAbsY = abs(primaryPos.y - downPos.y)
+
+                                when (inputMode) {
+                                    InputMode.Trackpad -> {
+                                        if (transform.scale > 0f) {
+                                            cursorX = (cursorX + dx / transform.scale)
+                                                .coerceIn(0f, rdpW.toFloat())
+                                            cursorY = (cursorY + dy / transform.scale)
+                                                .coerceIn(0f, rdpH.toFloat())
+                                        }
+                                        port.onPointerEvent(
+                                            PointerEvent(
+                                                cursorX, cursorY,
+                                                PointerAction.Move,
+                                                buttons = if (trackpadDragHeld) 1 else 0,
+                                                wheelDelta = 0f,
+                                            ),
+                                        )
+                                    }
+                                    InputMode.DirectTouch -> {
+                                        // Start a real mouse drag once we cross the tap threshold.
+                                        if (!directTouchDragStarted && !directTouchLongPressFired &&
+                                            (totalMoveAbsX > tapThresholdPx ||
+                                                totalMoveAbsY > tapThresholdPx)
+                                        ) {
+                                            directTouchDragStarted = true
+                                            val (sxr, syr) = transform.toRdp(downPos.x, downPos.y)
+                                            val scx = sxr.coerceIn(0f, rdpW.toFloat())
+                                            val scy = syr.coerceIn(0f, rdpH.toFloat())
+                                            port.onPointerEvent(
+                                                PointerEvent(scx, scy, PointerAction.Hover, 0, 0f),
+                                            )
+                                            port.onPointerEvent(
+                                                PointerEvent(scx, scy, PointerAction.Down, 1, 0f),
+                                            )
+                                        }
+                                        if (directTouchDragStarted) {
+                                            val (rxr, ryr) = transform.toRdp(primaryPos.x, primaryPos.y)
+                                            port.onPointerEvent(
+                                                PointerEvent(
+                                                    rxr.coerceIn(0f, rdpW.toFloat()),
+                                                    ryr.coerceIn(0f, rdpH.toFloat()),
+                                                    PointerAction.Move, 1, 0f,
+                                                ),
+                                            )
+                                        }
+                                        if (rdpeiSupported.value && rdpeiPrimaryFingerId >= 0) {
+                                            val (rxr, ryr) = transform.toRdp(primaryPos.x, primaryPos.y)
+                                            val ok = port.onTouchContacts(
+                                                listOf(
+                                                    TouchContact(
+                                                        fingerId = rdpeiPrimaryFingerId,
+                                                        x = rxr.coerceIn(0f, rdpW.toFloat()).roundToInt(),
+                                                        y = ryr.coerceIn(0f, rdpH.toFloat()).roundToInt(),
+                                                        phase = RemoteTouchPhase.Move,
+                                                        pressure = 1024,
+                                                    ),
+                                                ),
+                                            )
+                                            if (!ok) rdpeiSupported.value = false
+                                        }
+                                    }
+                                }
+                                markInteraction()
                             }
 
-                            change.consume()
+                            if (pressedCount == 0) gestureDone = true
+                        }
+
+                        // ── Gesture ended: emit closing actions ─────────────
+                        // Release Ctrl if we were pinching.
+                        if (ctrlHeld) {
+                            port.onKeyEvent(
+                                KeyEventPayload(
+                                    keyCode = android.view.KeyEvent.KEYCODE_CTRL_LEFT,
+                                    metaState = 0,
+                                    action = KeyAction.Up,
+                                ),
+                            )
+                        }
+                        // Lift any RDPEI contacts still tracked.
+                        if (rdpeiSupported.value && inputMode == InputMode.DirectTouch) {
+                            val contacts = mutableListOf<TouchContact>()
+                            rdpeiFingerIds.value[primaryId.value]?.let { fid ->
+                                val (rxe, rye) = transform.toRdp(primaryPos.x, primaryPos.y)
+                                contacts += TouchContact(
+                                    fingerId = fid,
+                                    x = rxe.coerceIn(0f, rdpW.toFloat()).roundToInt(),
+                                    y = rye.coerceIn(0f, rdpH.toFloat()).roundToInt(),
+                                    phase = RemoteTouchPhase.Up,
+                                    pressure = 0,
+                                )
+                            }
+                            secondId?.let { sid ->
+                                rdpeiFingerIds.value[sid.value]?.let { fid ->
+                                    val (rxe, rye) = transform.toRdp(secondPos.x, secondPos.y)
+                                    contacts += TouchContact(
+                                        fingerId = fid,
+                                        x = rxe.coerceIn(0f, rdpW.toFloat()).roundToInt(),
+                                        y = rye.coerceIn(0f, rdpH.toFloat()).roundToInt(),
+                                        phase = RemoteTouchPhase.Up,
+                                        pressure = 0,
+                                    )
+                                }
+                            }
+                            if (contacts.isNotEmpty()) {
+                                val ok = port.onTouchContacts(contacts)
+                                if (!ok) rdpeiSupported.value = false
+                            }
+                            rdpeiFingerIds.value.remove(primaryId.value)
+                            secondId?.let { rdpeiFingerIds.value.remove(it.value) }
+                        }
+
+                        when (inputMode) {
+                            InputMode.Trackpad -> {
+                                if (trackpadDragHeld) {
+                                    // Close the tap-and-half drag.
+                                    port.onPointerEvent(
+                                        PointerEvent(cursorX, cursorY, PointerAction.Up, 1, 0f),
+                                    )
+                                } else if (twoFingerEntered) {
+                                    // Was this a quick stationary two-finger tap?
+                                    val elapsed = System.currentTimeMillis() - twoFingerStartTimeMs
+                                    val cx = (primaryPos.x + secondPos.x) / 2f
+                                    val cy = (primaryPos.y + secondPos.y) / 2f
+                                    val moved = abs(cx - twoFingerStartCentroid.x) > twoFingerTapMaxMovePx ||
+                                        abs(cy - twoFingerStartCentroid.y) > twoFingerTapMaxMovePx
+                                    if (!twoFingerScrolled && !moved && elapsed < twoFingerTapMaxDurationMs) {
+                                        port.onPointerEvent(
+                                            PointerEvent(cursorX, cursorY, PointerAction.Down, 2, 0f),
+                                        )
+                                        port.onPointerEvent(
+                                            PointerEvent(cursorX, cursorY, PointerAction.Up, 2, 0f),
+                                        )
+                                    }
+                                } else {
+                                    // Single-finger tap.
+                                    if (totalMoveAbsX < tapThresholdPx && totalMoveAbsY < tapThresholdPx) {
+                                        port.onPointerEvent(
+                                            PointerEvent(cursorX, cursorY, PointerAction.Down, 1, 0f),
+                                        )
+                                        port.onPointerEvent(
+                                            PointerEvent(cursorX, cursorY, PointerAction.Up, 1, 0f),
+                                        )
+                                        // Remember this tap so a fast follow-up Down can promote
+                                        // to tap-and-half drag.
+                                        trackpadLastTapMs.value = System.currentTimeMillis()
+                                        trackpadLastTapX.value = downPos.x
+                                        trackpadLastTapY.value = downPos.y
+                                    }
+                                }
+                            }
+                            InputMode.DirectTouch -> {
+                                if (directTouchDragStarted) {
+                                    val (rxe, rye) = transform.toRdp(primaryPos.x, primaryPos.y)
+                                    port.onPointerEvent(
+                                        PointerEvent(
+                                            rxe.coerceIn(0f, rdpW.toFloat()),
+                                            rye.coerceIn(0f, rdpH.toFloat()),
+                                            PointerAction.Up, 1, 0f,
+                                        ),
+                                    )
+                                } else if (twoFingerEntered || directTouchLongPressFired) {
+                                    // Multi-finger gesture or long-press already produced output.
+                                } else {
+                                    // Single tap. Apply the double-tap → double-click rule.
+                                    val (tapRx, tapRy) = transform.toRdp(downPos.x, downPos.y)
+                                    val tcx = tapRx.coerceIn(0f, rdpW.toFloat())
+                                    val tcy = tapRy.coerceIn(0f, rdpH.toFloat())
+                                    val now = System.currentTimeMillis()
+                                    val gap = now - directTouchLastTapMs.value
+                                    val nearLast = abs(tcx - directTouchLastTapRdpX.value) < doubleTapMaxMoveRdp &&
+                                        abs(tcy - directTouchLastTapRdpY.value) < doubleTapMaxMoveRdp
+                                    val isDoubleTap = gap in 1..doubleTapWindowMs && nearLast
+                                    port.onPointerEvent(
+                                        PointerEvent(tcx, tcy, PointerAction.Hover, 0, 0f),
+                                    )
+                                    port.onPointerEvent(
+                                        PointerEvent(tcx, tcy, PointerAction.Down, 1, 0f),
+                                    )
+                                    port.onPointerEvent(
+                                        PointerEvent(tcx, tcy, PointerAction.Up, 1, 0f),
+                                    )
+                                    if (isDoubleTap) {
+                                        port.onPointerEvent(
+                                            PointerEvent(tcx, tcy, PointerAction.Down, 1, 0f),
+                                        )
+                                        port.onPointerEvent(
+                                            PointerEvent(tcx, tcy, PointerAction.Up, 1, 0f),
+                                        )
+                                        directTouchLastTapMs.value = 0L
+                                    } else {
+                                        directTouchLastTapMs.value = now
+                                        directTouchLastTapRdpX.value = tcx
+                                        directTouchLastTapRdpY.value = tcy
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -924,7 +1470,6 @@ private fun SessionScreen(
         val edgeExpandedDockWPx = with(density) { 208.dp.toPx() }
         val freeDockWPx = with(density) { 160.dp.toPx() }
         val dockHPx = with(density) { 60.dp.toPx() }
-        val snapPx = with(density) { 64.dp.toPx() }
 
         // Initialise position: right edge, upper 1/3 of screen.
         // Also re-clamp on every screen-size change (live resize / rotation / DeX
@@ -937,14 +1482,14 @@ private fun SessionScreen(
                     y = screenHPx / 6f,
                 )
             } else {
-                // If the dock was snapped to the right edge, keep it stuck there as
-                // the edge moves; otherwise just clamp into the new bounds.
-                val prevRightSnap = dockPos.x >= screenWPx - collapsedDockWPx - 1f ||
-                    dockPos.x > screenWPx - collapsedDockWPx
-                val newX = if (prevRightSnap) {
+                // Dock always rests at an edge. Preserve whichever edge it was on:
+                // steady-state x is 0f (left) or screenWPx - collapsedDockWPx (right),
+                // so any positive x means "was on the right edge".
+                val wasOnRight = dockPos.x > 0f
+                val newX = if (wasOnRight) {
                     (screenWPx - collapsedDockWPx).coerceAtLeast(0f)
                 } else {
-                    dockPos.x.coerceIn(0f, (screenWPx - collapsedDockWPx).coerceAtLeast(0f))
+                    0f
                 }
                 val newY = dockPos.y.coerceIn(0f, (screenHPx - dockHPx).coerceAtLeast(0f))
                 if (newX != dockPos.x || newY != dockPos.y) {
@@ -1103,13 +1648,15 @@ private fun SessionScreen(
                             detectDragGestures(
                                 onDragStart = { isEdgeExpanded = false },
                                 onDragEnd = {
-                                    val rightSnap = screenWPx - collapsedDockWPx
-                                    val newX = when {
-                                        dockPos.x >= rightSnap - snapPx -> rightSnap
-                                        dockPos.x <= snapPx -> 0f
-                                        else -> dockPos.x
-                                    }.coerceIn(0f, screenWPx - collapsedDockWPx)
-                                    dockPos = Offset(newX, dockPos.y.coerceIn(0f, screenHPx - dockHPx))
+                                    // Always snap to whichever edge the dock center is
+                                    // closer to — the dock never rests mid-screen.
+                                    val rightEdgeX = (screenWPx - collapsedDockWPx).coerceAtLeast(0f)
+                                    val dockCenterX = dockPos.x + collapsedDockWPx / 2f
+                                    val newX = if (dockCenterX >= screenWPx / 2f) rightEdgeX else 0f
+                                    dockPos = Offset(
+                                        newX,
+                                        dockPos.y.coerceIn(0f, (screenHPx - dockHPx).coerceAtLeast(0f)),
+                                    )
                                 },
                             ) { change, dragAmount ->
                                 change.consume()
@@ -1154,7 +1701,14 @@ private fun SessionScreen(
                                 },
                             )
                             DockButton(
-                                icon = Icons.Default.Mouse,
+                                // Show the icon matching the CURRENT mode so the dock
+                                // always tells the user which input scheme is live —
+                                // tap to swap to the other.
+                                icon = if (inputMode == InputMode.DirectTouch) {
+                                    Icons.Default.TouchApp
+                                } else {
+                                    Icons.Default.Mouse
+                                },
                                 onClick = {
                                     inputMode = if (inputMode == InputMode.Trackpad) {
                                         InputMode.DirectTouch

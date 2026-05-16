@@ -54,7 +54,8 @@ fun VaultGate(
         }
     }
 
-    if (!appSettings.biometricUnlock || unlocked) {
+    // Vault encryption off → no gate (plaintext storage was the user's explicit choice).
+    if (!appSettings.vaultEncryption || unlocked) {
         content()
         return
     }

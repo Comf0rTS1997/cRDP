@@ -9,11 +9,15 @@ import com.crdp.core.rdp.model.CameraMode
 import com.crdp.core.rdp.model.ConnectionProfile
 import com.crdp.core.rdp.model.DirectConnectionProfile
 import com.crdp.core.rdp.model.GatewayConnectionProfile
+import com.crdp.core.rdp.model.VaultEntry
 import com.crdp.core.rdp.repository.ProfileRepository
+import com.crdp.core.rdp.repository.VaultRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.net.URLDecoder
@@ -28,8 +32,6 @@ data class EditorUiState(
     val displayName: String = "",
     val host: String = "",
     val port: String = "3389",
-    val username: String = "",
-    val domain: String = "",
     val gatewayBaseUrl: String = "http://10.0.2.2:8080",
     val targetHost: String = "",
     val targetPort: String = "3389",
@@ -40,8 +42,12 @@ data class EditorUiState(
     val autoResolution: Boolean = false,
     /** "" or "0" means "use the app default DPI". Otherwise a percent in [100, 500]. */
     val desktopScaleFactor: String = "",
-    val password: String = "",
-    val requireBiometric: Boolean = false,
+    /**
+     * Vault entry the connection draws its credentials from. Null = no saved
+     * credentials; the user will be prompted via [com.crdp.core.rdp.engine.EngineChallenge.Auth]
+     * at connect time.
+     */
+    val vaultEntryId: String? = null,
     val audioMode: AudioMode = AudioMode.UseAppDefault,
     /** null = use app default; true/false = explicit override. */
     val microphoneOverride: Boolean? = null,
@@ -58,6 +64,7 @@ data class EditorUiState(
 @HiltViewModel
 class ConnectionEditorViewModel @Inject constructor(
     private val repository: ProfileRepository,
+    private val vaultRepository: VaultRepository,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
@@ -68,6 +75,10 @@ class ConnectionEditorViewModel @Inject constructor(
 
     private val _state = MutableStateFlow(EditorUiState())
     val state: StateFlow<EditorUiState> = _state.asStateFlow()
+
+    /** Live list of vault entries for the credential picker dropdown. */
+    val vaultEntries: StateFlow<List<VaultEntry>> = vaultRepository.entries
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     init {
         if (rawProfileId != "new") {
@@ -87,8 +98,6 @@ class ConnectionEditorViewModel @Inject constructor(
     fun updateDisplayName(value: String) = _state.update { it.copy(displayName = value) }
     fun updateHost(value: String) = _state.update { it.copy(host = value) }
     fun updatePort(value: String) = _state.update { it.copy(port = value) }
-    fun updateUsername(value: String) = _state.update { it.copy(username = value) }
-    fun updateDomain(value: String) = _state.update { it.copy(domain = value) }
     fun updateGatewayBaseUrl(value: String) = _state.update { it.copy(gatewayBaseUrl = value) }
     fun updateTargetHost(value: String) = _state.update { it.copy(targetHost = value) }
     fun updateTargetPort(value: String) = _state.update { it.copy(targetPort = value) }
@@ -99,8 +108,7 @@ class ConnectionEditorViewModel @Inject constructor(
     fun updateDesktopScaleFactor(value: String) =
         _state.update { it.copy(desktopScaleFactor = value.filter { c -> c.isDigit() }.take(3)) }
     fun updateColorDepth(value: Int) = _state.update { it.copy(colorDepth = value) }
-    fun updatePassword(value: String) = _state.update { it.copy(password = value) }
-    fun updateRequireBiometric(value: Boolean) = _state.update { it.copy(requireBiometric = value) }
+    fun updateVaultEntryId(value: String?) = _state.update { it.copy(vaultEntryId = value) }
     fun updateAudioMode(value: AudioMode) = _state.update { it.copy(audioMode = value) }
     fun updateMicrophoneOverride(value: Boolean?) = _state.update { it.copy(microphoneOverride = value) }
     fun updateClipboardSyncOverride(value: Boolean?) = _state.update { it.copy(clipboardSyncOverride = value) }
@@ -108,7 +116,19 @@ class ConnectionEditorViewModel @Inject constructor(
     fun updateCameraMode(value: CameraMode) = _state.update { it.copy(cameraMode = value) }
     fun updateCameraDeviceId(value: String?) = _state.update { it.copy(cameraDeviceId = value?.takeIf { v -> v.isNotBlank() }) }
 
-    fun save(requireUserAuth: Boolean, onDone: (String) -> Unit) {
+    /**
+     * Persist [entry] (assigning an id when blank) and immediately link it to the
+     * current editor state. Invoked from the "Add new credential" inline dialog.
+     */
+    fun saveAndSelectVaultEntry(entry: VaultEntry) {
+        viewModelScope.launch {
+            val finalId = entry.id.ifBlank { UUID.randomUUID().toString() }
+            vaultRepository.upsert(entry.copy(id = finalId))
+            _state.update { it.copy(vaultEntryId = finalId) }
+        }
+    }
+
+    fun save(onDone: (String) -> Unit) {
         viewModelScope.launch {
             val s = _state.value
             val id = s.existingId ?: UUID.randomUUID().toString()
@@ -119,15 +139,19 @@ class ConnectionEditorViewModel @Inject constructor(
                     displayName = s.displayName.ifBlank { s.host.ifBlank { "Direct session" } },
                     host = s.host.trim(),
                     port = s.port.toIntOrNull() ?: 3389,
-                    username = s.username.trim(),
-                    domain = s.domain.trim().ifBlank { null },
-                    password = s.password,
+                    vaultEntryId = s.vaultEntryId,
+                    // Credentials live in the vault now — these inline fields stay
+                    // empty and the repository strips them on persist. Keeping the
+                    // model fields nullable lets legacy on-disk profiles still load.
+                    username = "",
+                    domain = null,
+                    password = "",
                     width = s.width.toIntOrNull() ?: 1280,
                     height = s.height.toIntOrNull() ?: 720,
                     colorDepth = s.colorDepth,
                     autoResolution = s.autoResolution,
                     desktopScaleFactor = scale,
-                    requireBiometric = s.requireBiometric,
+                    requireBiometric = false,
                     audioMode = s.audioMode,
                     microphoneOverride = s.microphoneOverride,
                     clipboardSyncOverride = s.clipboardSyncOverride,
@@ -146,7 +170,7 @@ class ConnectionEditorViewModel @Inject constructor(
                     height = s.height.toIntOrNull() ?: 720,
                     autoResolution = s.autoResolution,
                     desktopScaleFactor = scale,
-                    requireBiometric = s.requireBiometric,
+                    requireBiometric = false,
                     audioMode = s.audioMode,
                     microphoneOverride = s.microphoneOverride,
                     clipboardSyncOverride = s.clipboardSyncOverride,
@@ -155,7 +179,7 @@ class ConnectionEditorViewModel @Inject constructor(
                     cameraDeviceId = s.cameraDeviceId,
                 )
             }
-            repository.upsert(profile, requireUserAuth)
+            repository.upsert(profile)
             onDone(profile.id)
         }
     }
@@ -172,15 +196,12 @@ class ConnectionEditorViewModel @Inject constructor(
             displayName = p.displayName,
             host = p.host,
             port = p.port.toString(),
-            username = p.username,
-            domain = p.domain.orEmpty(),
-            password = p.password,
+            vaultEntryId = p.vaultEntryId,
             width = p.width.toString(),
             height = p.height.toString(),
             colorDepth = p.colorDepth,
             autoResolution = p.autoResolution,
             desktopScaleFactor = if (p.desktopScaleFactor in 100..500) p.desktopScaleFactor.toString() else "",
-            requireBiometric = p.requireBiometric,
             audioMode = p.audioMode,
             microphoneOverride = p.microphoneOverride,
             clipboardSyncOverride = p.clipboardSyncOverride,
@@ -201,7 +222,6 @@ class ConnectionEditorViewModel @Inject constructor(
             height = p.height.toString(),
             autoResolution = p.autoResolution,
             desktopScaleFactor = if (p.desktopScaleFactor in 100..500) p.desktopScaleFactor.toString() else "",
-            requireBiometric = p.requireBiometric,
             audioMode = p.audioMode,
             microphoneOverride = p.microphoneOverride,
             clipboardSyncOverride = p.clipboardSyncOverride,

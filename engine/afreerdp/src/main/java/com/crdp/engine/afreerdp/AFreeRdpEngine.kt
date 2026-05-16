@@ -251,6 +251,25 @@ class AFreeRdpEngine @Inject constructor(
         }.getOrDefault(false)
     }
 
+    override fun pushLocalClipboard(text: String): Boolean {
+        if (!clipboardSyncEnabledForSession || !clipboardBridgeActive) return false
+        if (text.isEmpty()) return false
+        val inst = instance
+        if (inst == 0L) return false
+        val exec = worker ?: return false
+        // Treat this as the authoritative local clipboard for dedupe so the
+        // OnPrimaryClipChangedListener path doesn't fire a duplicate copy if it
+        // ever wakes up — and clamp ignoreNextLocalClip so a remote echo of the
+        // same string doesn't bounce back as a local change.
+        if (text == lastTextSentToRemote) return true
+        lastTextSentToRemote = text
+        exec.execute {
+            if (!clipboardBridgeActive || instance != inst) return@execute
+            LibFreeRDP.sendClipboardData(inst, text)
+        }
+        return true
+    }
+
     override fun sendPointer(x: Int, y: Int, buttons: Int, action: PointerAction, wheel: Int, wheelH: Int) {
         val inst = instance
         if (inst == 0L) return

@@ -3,6 +3,8 @@ package com.crdp.engine.afreerdp
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.RectF
+import android.os.Handler
+import android.os.HandlerThread
 import android.view.Surface
 import com.crdp.core.rdp.engine.RenderBackend
 import com.crdp.core.rdp.engine.RenderOptions
@@ -64,6 +66,25 @@ internal class SurfaceBlitter {
     private var dirtyRight = 0
     private var dirtyBottom = 0
 
+    // Number of consecutive full-frame paints still owed after the most recent
+    // surface attach/resize. Android's SurfaceView BufferQueue typically holds
+    // 2–3 back buffers; a single flush after resize only refreshes one, leaving
+    // pre-resize stale pixels (or driver-zeroed black) rotating into the display
+    // until enough remote-side updates trigger more flushes. We bleed the queue
+    // by forcing this many full-bitmap blits regardless of dirty-rect emptiness
+    // or frame-pacing throttle.
+    private var pendingFullRepaints = 0
+
+    // Dedicated worker for post-resize back-buffer refresh. Runs off the UI thread
+    // because lockHardwareCanvas can block on SurfaceFlinger for hundreds of ms
+    // during a DeX freeform-window resize animation. Paints the bitmap we already
+    // have (last good content) into the new BufferQueue's zero-filled buffers so
+    // the screen doesn't flash black before the engine worker resumes pushing
+    // graphics updates for the new size.
+    private val refreshThread: HandlerThread = HandlerThread("crdp-blitter-refresh").apply { start() }
+    private val refreshHandler: Handler = Handler(refreshThread.looper)
+
+
     fun attach(
         surface: Surface,
         w: Int,
@@ -71,7 +92,6 @@ internal class SurfaceBlitter {
         refreshHz: Float = 60f,
         options: RenderOptions = RenderOptions(),
     ) {
-        val needFullRepaint: Boolean
         lock.withLock {
             this.surface = surface
             surfaceWidth = w
@@ -81,6 +101,14 @@ internal class SurfaceBlitter {
             lastFlushNanos = 0L
             invalidateTransform()
 
+            // Auto resolves to HWUI: it's the only backend that synchronously
+            // serializes bitmap reads against the engine worker's JNI writes
+            // (via `unlockCanvasAndPost`). The current GLES path posts the
+            // draw asynchronously and lets the engine worker continue writing
+            // into the same bitmap before the render thread has finished
+            // reading it — that race produces torn frames and stalls. A proper
+            // GLES default needs AHardwareBuffer-backed bitmaps + EGLImage,
+            // not just shader/upload tweaks.
             val resolved = when (options.backend) {
                 RenderBackend.Auto -> RenderBackend.HwuiCanvas
                 RenderBackend.HwuiCanvas -> RenderBackend.HwuiCanvas
@@ -105,26 +133,30 @@ internal class SurfaceBlitter {
                 glRenderer?.setSampling(sampling)
             }
 
-            // Surface rotation / DeX resize hands us a fresh Surface that is fully
-            // black until the next FreeRDP graphics update lands. Mark the whole
-            // existing bitmap dirty so the next flushDirty paints it end-to-end —
-            // otherwise half the surface stays black until the user causes a
-            // remote-side redraw.
+            // Surface rotation / DeX resize hands us a fresh Surface whose back
+            // buffers are driver-zeroed (black). Mark the whole existing bitmap
+            // dirty and queue 3 forced repaints — one per BufferQueue back buffer
+            // — so the engine worker's next 3 flushes cover the full surface.
             val bmp = bitmap
             if (bmp != null && backend == RenderBackend.HwuiCanvas) {
                 dirtyLeft = 0
                 dirtyTop = 0
                 dirtyRight = bmp.width
                 dirtyBottom = bmp.height
-                needFullRepaint = true
-            } else {
-                needFullRepaint = false
+                pendingFullRepaints = 3
             }
         }
-        // Flush outside the lock; flushHwui acquires it briefly itself and the
-        // actual canvas draw must run unlocked (lockHardwareCanvas blocks).
-        if (needFullRepaint) {
-            flushDirty()
+        // Bridge the gap between this resize and the first engine-driven update:
+        // paint whatever the bitmap currently holds (last good frame) into the
+        // new back buffers from a worker thread. Coalesce multiple resize events
+        // by clearing any pending refresh first. Running on a dedicated thread
+        // keeps the UI thread unblocked even when SurfaceFlinger stalls during
+        // a DeX window-resize animation.
+        if (backend == RenderBackend.HwuiCanvas && bitmap != null) {
+            refreshHandler.removeCallbacksAndMessages(null)
+            refreshHandler.post {
+                repeat(3) { flushDirty() }
+            }
         }
     }
 
@@ -133,15 +165,19 @@ internal class SurfaceBlitter {
         glRenderer?.detach()
     }
 
-    fun release() = lock.withLock {
-        surface = null
-        glRenderer?.release()
-        glRenderer = null
-        bitmap?.recycle()
-        bitmap = null
-        surfaceWidth = 0
-        surfaceHeight = 0
-        invalidateTransform()
+    fun release() {
+        lock.withLock {
+            surface = null
+            glRenderer?.release()
+            glRenderer = null
+            bitmap?.recycle()
+            bitmap = null
+            surfaceWidth = 0
+            surfaceHeight = 0
+            invalidateTransform()
+        }
+        refreshHandler.removeCallbacksAndMessages(null)
+        refreshThread.quitSafely()
     }
 
     /** Bitmap handed to FreeRDP for painting. Sized to the RDP session resolution. */
@@ -150,6 +186,12 @@ internal class SurfaceBlitter {
         if (bmp == null || bmp.width != width || bmp.height != height) {
             bmp?.recycle()
             bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            // FreeRDP's android JNI writes PIXEL_FORMAT_RGBX32 (alpha byte is don't-care
+            // and often left as 0x00). Marking hasAlpha=false tells HWUI/Skia to ignore
+            // the alpha channel during drawBitmap, so opaque pixels stay opaque instead
+            // of blending against the back buffer — eliminates the transparent-window
+            // ghosting that otherwise appears whenever the remote paints new content.
+            bmp.setHasAlpha(false)
             bitmap = bmp
             invalidateTransform()
         }
@@ -191,14 +233,13 @@ internal class SurfaceBlitter {
     }
 
     private fun flushHwui(): IntArray? {
-        if (dirtyRight <= dirtyLeft || dirtyBottom <= dirtyTop) return null
+        val force = pendingFullRepaints > 0
+        val hasDirty = dirtyRight > dirtyLeft && dirtyBottom > dirtyTop
+        if (!force && !hasDirty) return null
         val now = System.nanoTime()
-        if (now - lastFlushNanos < minFrameIntervalNanos) return null
+        if (!force && now - lastFlushNanos < minFrameIntervalNanos) return null
 
-        val dx = dirtyLeft; val dy = dirtyTop
-        val dw = dirtyRight - dx; val dh = dirtyBottom - dy
-        dirtyLeft = Int.MAX_VALUE; dirtyTop = Int.MAX_VALUE
-        dirtyRight = 0; dirtyBottom = 0
+        val dx: Int; val dy: Int; val dw: Int; val dh: Int
 
         val s: Surface
         val src: Bitmap
@@ -206,8 +247,17 @@ internal class SurfaceBlitter {
         lock.withLock {
             s = surface ?: return null
             src = bitmap ?: return null
+            if (force) {
+                dx = 0; dy = 0; dw = src.width; dh = src.height
+            } else {
+                dx = dirtyLeft; dy = dirtyTop
+                dw = dirtyRight - dx; dh = dirtyBottom - dy
+            }
+            dirtyLeft = Int.MAX_VALUE; dirtyTop = Int.MAX_VALUE
+            dirtyRight = 0; dirtyBottom = 0
             ensureTransform(src.width, src.height)
             needsClear = !coversFullSurface
+            if (force) pendingFullRepaints--
         }
 
         if (!s.isValid) return null

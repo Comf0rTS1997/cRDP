@@ -435,18 +435,21 @@ internal class GlSurfaceRenderer {
             }
         """
 
+        // alpha forced to 1.0 because FreeRDP writes PIXEL_FORMAT_RGBX32 — the X byte
+        // is don't-care and would otherwise let SurfaceFlinger blend the buffer
+        // against whatever's behind the SurfaceView.
         const val FS_NEAREST = """
             precision mediump float;
             uniform sampler2D uTex;
             varying vec2 vTex;
-            void main() { gl_FragColor = texture2D(uTex, vTex); }
+            void main() { gl_FragColor = vec4(texture2D(uTex, vTex).rgb, 1.0); }
         """
 
         const val FS_BILINEAR = """
             precision mediump float;
             uniform sampler2D uTex;
             varying vec2 vTex;
-            void main() { gl_FragColor = texture2D(uTex, vTex); }
+            void main() { gl_FragColor = vec4(texture2D(uTex, vTex).rgb, 1.0); }
         """
 
         // 3-tap separable Lanczos approximation. Driven from the integer pixel
@@ -483,7 +486,7 @@ internal class GlSurfaceRenderer {
                         wsum += w;
                     }
                 }
-                gl_FragColor = col / wsum;
+                gl_FragColor = vec4((col / wsum).rgb, 1.0);
             }
         """
     }

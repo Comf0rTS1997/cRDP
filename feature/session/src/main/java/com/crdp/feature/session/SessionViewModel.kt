@@ -111,6 +111,15 @@ class SessionViewModel @Inject constructor(
     private var storedWindowW = 0
     private var storedWindowH = 0
 
+    // Debounces DisplayControl monitor-layout updates during DeX freeform drag-resize.
+    // `LaunchedEffect(windowW, windowH)` in SessionScreen fires on every intermediate
+    // pixel size while the user is dragging the window edge — sending a fresh
+    // sendMonitorLayout for each one floods the server's RDPEDISP DVC and the Win11
+    // host drops the session. Hold the latest requested size in this job and apply
+    // it once the gesture settles. Mirrors what mstsc / RDP Manager do internally.
+    private var pendingResizeJob: Job? = null
+    private val resizeDebounceMs = 250L
+
     // Effective DPI percent the UI most recently asked for. 0 means "not yet known —
     // wait for the UI to report the first effective scale before opening the
     // connection so we don't open at 100% then immediately reconnect at 150%."
@@ -346,23 +355,40 @@ class SessionViewModel @Inject constructor(
                 is GatewayConnectionProfile -> p.height
             }
             if (isAuto && (curW != w || curH != h)) {
-                val scale = when (p) {
-                    is DirectConnectionProfile -> p.desktopScaleFactor
-                    is GatewayConnectionProfile -> p.desktopScaleFactor
-                }
-                val live = runCatching {
-                    ready.port.requestResolution(w, h, scale)
-                }.getOrDefault(false)
-                if (live) {
-                    // Update the cached profile size in place so the UI's RDP→screen
-                    // transform follows the server's new resolution. No reconnect.
-                    val resized = when (p) {
-                        is DirectConnectionProfile -> p.copy(width = w, height = h)
-                        is GatewayConnectionProfile -> p.copy(width = w, height = h)
+                // Cancel any in-flight pending resize so only the LATEST requested
+                // size is applied. Each new window dimension during a drag gesture
+                // restarts the timer; the actual sendMonitorLayout only fires once
+                // the user stops dragging for resizeDebounceMs.
+                pendingResizeJob?.cancel()
+                pendingResizeJob = viewModelScope.launch {
+                    kotlinx.coroutines.delay(resizeDebounceMs)
+                    val current = _ready.value ?: return@launch
+                    val curProfile = current.profile
+                    val nowW = when (curProfile) {
+                        is DirectConnectionProfile -> curProfile.width
+                        is GatewayConnectionProfile -> curProfile.width
                     }
-                    _ready.value = SessionReady(resized, ready.port)
-                } else {
-                    reconnect(ready, w, h)
+                    val nowH = when (curProfile) {
+                        is DirectConnectionProfile -> curProfile.height
+                        is GatewayConnectionProfile -> curProfile.height
+                    }
+                    if (nowW == w && nowH == h) return@launch
+                    val scale = when (curProfile) {
+                        is DirectConnectionProfile -> curProfile.desktopScaleFactor
+                        is GatewayConnectionProfile -> curProfile.desktopScaleFactor
+                    }
+                    val live = runCatching {
+                        current.port.requestResolution(w, h, scale)
+                    }.getOrDefault(false)
+                    if (live) {
+                        val resized = when (curProfile) {
+                            is DirectConnectionProfile -> curProfile.copy(width = w, height = h)
+                            is GatewayConnectionProfile -> curProfile.copy(width = w, height = h)
+                        }
+                        _ready.value = SessionReady(resized, current.port)
+                    } else {
+                        reconnect(current, w, h)
+                    }
                 }
             }
             return

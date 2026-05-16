@@ -96,7 +96,7 @@ if [ -f "$CONF_FILE" ]; then
         /^NDK_TARGET=21$/     { print "NDK_TARGET=26"; next }
         { print }
     ' "$CONF_FILE" > "$CONF_FILE.tmp" && mv "$CONF_FILE.tmp" "$CONF_FILE"
-    trap 'cp -p "$CONF_BACKUP" "$CONF_FILE"' EXIT
+    # Restoration trap is set later, after all upstream-script patches are installed.
 fi
 
 DEPS_FLAG=()
@@ -111,15 +111,71 @@ FREERDP_BUILD_SCRIPT="$FREERDP_ROOT/scripts/android-build-freerdp.sh"
 FREERDP_BUILD_SCRIPT_BAK="$WORK/android-build-freerdp.sh.bak"
 if [ -f "$FREERDP_BUILD_SCRIPT" ] && ! grep -q "CHANNEL_RDPECAM_CLIENT" "$FREERDP_BUILD_SCRIPT"; then
     cp -p "$FREERDP_BUILD_SCRIPT" "$FREERDP_BUILD_SCRIPT_BAK"
+    # Two patches to android-build-freerdp.sh:
+    #  - CHANNEL_RDPECAM_CLIENT=ON enables the rdpecam Android HAL.
+    #  - Extend CMAKE_SHARED_LINKER_FLAGS with -Wl,-z,max-page-size=16384 so
+    #    libfreerdp3 / libfreerdp-client3 / libwinpr3 LOAD segments are aligned
+    #    for Android 15+ devices running with 16KB pages.
     awk '/^CMAKE_CMD_ARGS="-DANDROID_NDK=\$ANDROID_NDK \\$/ {
             print
             print "\t-DCHANNEL_RDPECAM_CLIENT=ON \\"
             next
-         } { print }' "$FREERDP_BUILD_SCRIPT" > "$FREERDP_BUILD_SCRIPT.tmp" \
+         }
+         /-DCMAKE_SHARED_LINKER_FLAGS="-L\$BUILD_DST\/\$ARCH" \\$/ {
+            sub(/"-L\$BUILD_DST\/\$ARCH"/, "\"-L$BUILD_DST/$ARCH -Wl,-z,max-page-size=16384\"")
+            print
+            next
+         }
+         { print }' "$FREERDP_BUILD_SCRIPT" > "$FREERDP_BUILD_SCRIPT.tmp" \
          && mv "$FREERDP_BUILD_SCRIPT.tmp" "$FREERDP_BUILD_SCRIPT"
-    # Chain restoration onto the existing trap (set further down for android-build.conf).
-    trap 'cp -p "$CONF_BACKUP" "$CONF_FILE" 2>/dev/null; cp -p "$FREERDP_BUILD_SCRIPT_BAK" "$FREERDP_BUILD_SCRIPT" 2>/dev/null' EXIT
 fi
+
+# Patch cJSON build to add 16KB page alignment to libcjson.so.
+CJSON_BUILD_SCRIPT="$FREERDP_ROOT/scripts/android-build-cjson.sh"
+CJSON_BUILD_SCRIPT_BAK="$WORK/android-build-cjson.sh.bak"
+if [ -f "$CJSON_BUILD_SCRIPT" ] && ! grep -q "max-page-size=16384" "$CJSON_BUILD_SCRIPT"; then
+    cp -p "$CJSON_BUILD_SCRIPT" "$CJSON_BUILD_SCRIPT_BAK"
+    # CMAKE_POLICY_VERSION_MINIMUM=3.5 needed because cJSON 1.7.18 declares
+    # cmake_minimum_required < 3.5 which CMake 4.x rejects outright.
+    awk '/^CMAKE_CMD_ARGS="-DANDROID_NDK=\$ANDROID_NDK \\$/ {
+            print
+            print "\t-DCMAKE_SHARED_LINKER_FLAGS=\"-Wl,-z,max-page-size=16384\" \\"
+            print "\t-DCMAKE_POLICY_VERSION_MINIMUM=3.5 \\"
+            next
+         } { print }' "$CJSON_BUILD_SCRIPT" > "$CJSON_BUILD_SCRIPT.tmp" \
+         && mv "$CJSON_BUILD_SCRIPT.tmp" "$CJSON_BUILD_SCRIPT"
+fi
+
+# Patch FFmpeg build to add 16KB page alignment to libav*/libsw*.so via --extra-ldflags.
+FFMPEG_BUILD_SCRIPT="$FREERDP_ROOT/scripts/android-build-ffmpeg.sh"
+FFMPEG_BUILD_SCRIPT_BAK="$WORK/android-build-ffmpeg.sh.bak"
+if [ -f "$FFMPEG_BUILD_SCRIPT" ] && ! grep -q "max-page-size=16384" "$FFMPEG_BUILD_SCRIPT"; then
+    cp -p "$FFMPEG_BUILD_SCRIPT" "$FFMPEG_BUILD_SCRIPT_BAK"
+    # The --extra-ldflags value is "${LDFLAGS}". Replace with concatenation.
+    awk '{ sub(/--extra-ldflags="\$\{LDFLAGS\}"/, "--extra-ldflags=\"${LDFLAGS} -Wl,-z,max-page-size=16384\""); print }' \
+        "$FFMPEG_BUILD_SCRIPT" > "$FFMPEG_BUILD_SCRIPT.tmp" \
+        && mv "$FFMPEG_BUILD_SCRIPT.tmp" "$FFMPEG_BUILD_SCRIPT"
+fi
+
+# Patch OpenSSL build to add 16KB page alignment to libssl.so / libcrypto.so.
+# OpenSSL's Configure accepts -Wl,... linker flags as positional args after the target.
+OPENSSL_BUILD_SCRIPT="$FREERDP_ROOT/scripts/android-build-openssl.sh"
+OPENSSL_BUILD_SCRIPT_BAK="$WORK/android-build-openssl.sh.bak"
+if [ -f "$OPENSSL_BUILD_SCRIPT" ] && ! grep -q "max-page-size=16384" "$OPENSSL_BUILD_SCRIPT"; then
+    cp -p "$OPENSSL_BUILD_SCRIPT" "$OPENSSL_BUILD_SCRIPT_BAK"
+    awk '{ sub(/\.\/Configure \$\{CONFIG\} -D__ANDROID_API__=\$NDK_TARGET/, "./Configure ${CONFIG} -D__ANDROID_API__=$NDK_TARGET -Wl,-z,max-page-size=16384"); print }' \
+        "$OPENSSL_BUILD_SCRIPT" > "$OPENSSL_BUILD_SCRIPT.tmp" \
+        && mv "$OPENSSL_BUILD_SCRIPT.tmp" "$OPENSSL_BUILD_SCRIPT"
+fi
+
+# Chain restoration of all patched upstream scripts.
+trap '
+    cp -p "$CONF_BACKUP" "$CONF_FILE" 2>/dev/null
+    cp -p "$FREERDP_BUILD_SCRIPT_BAK" "$FREERDP_BUILD_SCRIPT" 2>/dev/null
+    cp -p "$CJSON_BUILD_SCRIPT_BAK" "$CJSON_BUILD_SCRIPT" 2>/dev/null
+    cp -p "$FFMPEG_BUILD_SCRIPT_BAK" "$FFMPEG_BUILD_SCRIPT" 2>/dev/null
+    cp -p "$OPENSSL_BUILD_SCRIPT_BAK" "$OPENSSL_BUILD_SCRIPT" 2>/dev/null
+' EXIT
 
 bash "$BUILD_SCRIPT" \
     "$BUILD_TYPE_FLAG" \

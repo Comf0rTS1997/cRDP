@@ -234,6 +234,10 @@ fun SessionRoute(
         )
     }
 
+    LaunchedEffect(settings.defaultClipboardSync) {
+        viewModel.setClipboardDefaultsHint(settings.defaultClipboardSync)
+    }
+
     // Mic is a runtime-prompt permission. Only request when the resolved decision
     // for this session needs it; otherwise stay silent.
     val ctx = LocalContext.current

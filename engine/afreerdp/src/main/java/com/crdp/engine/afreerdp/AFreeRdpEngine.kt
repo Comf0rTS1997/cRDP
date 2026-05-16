@@ -514,27 +514,14 @@ class AFreeRdpEngine @Inject constructor(
         // are absent from this libfreerdp build (built without
         // WITH_FREERDP_DEPRECATED_COMMANDLINE), so use the unified `/cache:` form.
         args += "/cache:bitmap,glyph,offscreen"
-        // /dynamic-resolution intentionally OMITTED.
-        //
-        // The bundled libfreerdp-android.so registers `android_desktop_resize` as
-        // its update->DesktopResize callback, and that handler only fires the
-        // Java OnGraphicsResize callback — it does NOT call `gdi_resize`. Every
-        // other FreeRDP client (X11 xf_sw_desktop_resize, SDL, Wayland) calls
-        // gdi_resize first so the GDI primary buffer reallocates to the new
-        // desktop dimensions BEFORE the next GFX frame lands.
-        //
-        // With /gfx:AVC444 + /dynamic-resolution, a successful DisplayControl
-        // resize triggers a server-side desktop resize, but our GDI buffer stays
-        // at the old size. The next AVC444 frame arrives at the new size,
-        // gdi_OutputUpdate sees mismatched surface vs gdi dims, calls
-        // freerdp_image_scale (which we don't fully support), gets
-        // CHANNEL_RC_NULL_DATA back (error 16), and the rdpgfx channel tears
-        // down the whole session. Confirmed in logcat after a DeX maximize.
-        //
-        // Until the native lib is rebuilt with a correct DesktopResize handler,
-        // we omit the flag entirely so requestResolution() always returns false
-        // and the viewmodel falls through to its reconnect-on-resize path.
-        // Slower but doesn't drop the connection.
+        // Negotiate the DisplayControl DVC so requestResolution() can push a
+        // new monitor layout mid-session. Requires our patched libfreerdp-android.so
+        // whose android_desktop_resize calls gdi_resize (matching every other
+        // FreeRDP client) — without that patch, a server-side resize after the
+        // DisplayControl push leaves the GDI primary buffer at the old size and
+        // the next AVC444 frame tears down the session with CHANNEL_RC_NULL_DATA
+        // (error 16) inside gdi_OutputUpdate.
+        args += "/dynamic-resolution"
         val qualityTok = when (p.audioQuality) {
             com.crdp.core.rdp.engine.AudioQuality.Dynamic -> "dynamic"
             com.crdp.core.rdp.engine.AudioQuality.Medium -> "medium"

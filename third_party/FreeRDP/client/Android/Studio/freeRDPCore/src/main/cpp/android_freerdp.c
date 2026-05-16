@@ -188,9 +188,24 @@ static BOOL android_desktop_resize(rdpContext* context)
 	WINPR_ASSERT(context->settings);
 	WINPR_ASSERT(context->instance);
 
-	freerdp_callback("OnGraphicsResize", "(JIII)V", (jlong)context->instance,
-	                 freerdp_settings_get_uint32(context->settings, FreeRDP_DesktopWidth),
-	                 freerdp_settings_get_uint32(context->settings, FreeRDP_DesktopHeight),
+	const UINT32 width = freerdp_settings_get_uint32(context->settings, FreeRDP_DesktopWidth);
+	const UINT32 height = freerdp_settings_get_uint32(context->settings, FreeRDP_DesktopHeight);
+
+	/* Resize the GDI primary buffer BEFORE notifying Java. Without this, the
+	 * GFX pipeline (rdpgfx) keeps decoding AVC/RFX frames into surfaces sized
+	 * for the new desktop while gdi_OutputUpdate tries to copy them into the
+	 * still-old primary_buffer; freerdp_image_scale falls into the size-mismatch
+	 * path and returns CHANNEL_RC_NULL_DATA (error 16), which the gfx channel
+	 * propagates as a session disconnect. Mirrors what every other client
+	 * (xf_sw_desktop_resize, sdl_desktop_resize, wlf_desktop_resize) does. */
+	rdpGdi* gdi = context->gdi;
+	if (gdi)
+	{
+		if (!gdi_resize(gdi, width, height))
+			return FALSE;
+	}
+
+	freerdp_callback("OnGraphicsResize", "(JIII)V", (jlong)context->instance, width, height,
 	                 freerdp_settings_get_uint32(context->settings, FreeRDP_ColorDepth));
 	return TRUE;
 }

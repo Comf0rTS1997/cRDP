@@ -84,7 +84,6 @@ internal class SurfaceBlitter {
     private val refreshThread: HandlerThread = HandlerThread("crdp-blitter-refresh").apply { start() }
     private val refreshHandler: Handler = Handler(refreshThread.looper)
 
-
     fun attach(
         surface: Surface,
         w: Int,

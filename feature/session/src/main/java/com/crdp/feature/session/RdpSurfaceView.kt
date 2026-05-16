@@ -2,7 +2,6 @@ package com.crdp.feature.session
 
 import android.content.Context
 import android.os.Build
-import android.util.Log
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.PointerIcon
@@ -109,15 +108,7 @@ class RdpSurfaceView(context: Context) : SurfaceView(context) {
 
     override fun dispatchKeyEventPreIme(event: KeyEvent): Boolean {
         val hook = onKeyIntercept
-        if (hook != null) {
-            val consumed = hook(event)
-            Log.d(
-                "cRdpKey",
-                "RdpSurfaceView.preIme action=${event.action} kc=${event.keyCode} " +
-                    "meta=0x${Integer.toHexString(event.metaState)} consumed=$consumed",
-            )
-            if (consumed) return true
-        }
+        if (hook != null && hook(event)) return true
         return super.dispatchKeyEventPreIme(event)
     }
 
@@ -125,31 +116,20 @@ class RdpSurfaceView(context: Context) : SurfaceView(context) {
 
     override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
         super.onWindowFocusChanged(hasWindowFocus)
-        android.util.Log.d(
-            "cRdpCap",
-            "onWindowFocusChanged hasFocus=$hasWindowFocus hasViewFocus=$isFocused " +
-                "captureOnFocus=$captureOnFocus hasPointerCapture=${
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) hasPointerCapture() else "n/a"
-                }",
-        )
         if (hasWindowFocus) {
             requestFocus()
             if (captureOnFocus &&
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
                 !hasPointerCapture()
             ) {
-                post {
-                    val ok = runCatching { requestPointerCapture(); true }.getOrDefault(false)
-                    android.util.Log.d("cRdpCap", "  → requestPointerCapture posted; hasCap=${hasPointerCapture()} ok=$ok")
-                }
+                post { runCatching { requestPointerCapture() } }
             }
         }
     }
 
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        val gotFocus = requestFocus()
-        android.util.Log.d("cRdpCap", "onAttachedToWindow requestFocus()=$gotFocus hasWindowFocus=${hasWindowFocus()}")
+        requestFocus()
         // onWindowFocusChanged only fires when the window's focus STATE changes.
         // If we're attached into an already-focused window (common — we're
         // created via AndroidView after the activity is up), that callback
@@ -160,16 +140,12 @@ class RdpSurfaceView(context: Context) : SurfaceView(context) {
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
             !hasPointerCapture()
         ) {
-            post {
-                val ok = runCatching { requestPointerCapture(); true }.getOrDefault(false)
-                android.util.Log.d("cRdpCap", "  attach→requestPointerCapture posted; hasCap=${hasPointerCapture()} ok=$ok")
-            }
+            post { runCatching { requestPointerCapture() } }
         }
     }
 
     override fun onPointerCaptureChange(hasCapture: Boolean) {
         super.onPointerCaptureChange(hasCapture)
-        android.util.Log.d("cRdpCap", "onPointerCaptureChange hasCapture=$hasCapture")
         // Hide the DeX system cursor only while we own pointer capture.
         // Restore default icon on release so the user can still navigate
         // the surface to re-engage capture (tap to recapture).

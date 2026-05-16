@@ -151,19 +151,8 @@ class MainActivity : FragmentActivity(), KeyEventHost {
 
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
         val hook = keyEventHook
-        android.util.Log.d(
-            "cRdpKey",
-            "Activity.dispatchKeyEvent action=${event.action} kc=${event.keyCode} " +
-                "meta=0x${Integer.toHexString(event.metaState)} src=0x${Integer.toHexString(event.source)} " +
-                "hookSet=${hook != null}",
-        )
-        if (hook != null && hook(event)) {
-            android.util.Log.d("cRdpKey", "  → consumed by hook")
-            return true
-        }
-        val result = super.dispatchKeyEvent(event)
-        android.util.Log.d("cRdpKey", "  → super=$result")
-        return result
+        if (hook != null && hook(event)) return true
+        return super.dispatchKeyEvent(event)
     }
 
     /**
@@ -175,15 +164,7 @@ class MainActivity : FragmentActivity(), KeyEventHost {
      */
     override fun dispatchKeyShortcutEvent(event: android.view.KeyEvent): Boolean {
         val hook = keyEventHook
-        android.util.Log.d(
-            "cRdpKey",
-            "Activity.dispatchKeyShortcut action=${event.action} kc=${event.keyCode} " +
-                "meta=0x${Integer.toHexString(event.metaState)} hookSet=${hook != null}",
-        )
-        if (hook != null && hook(event)) {
-            android.util.Log.d("cRdpKey", "  → shortcut consumed by hook")
-            return true
-        }
+        if (hook != null && hook(event)) return true
         return super.dispatchKeyShortcutEvent(event)
     }
 

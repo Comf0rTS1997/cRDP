@@ -740,24 +740,12 @@ class AFreeRdpEngine @Inject constructor(
         // are absent from this libfreerdp build (built without
         // WITH_FREERDP_DEPRECATED_COMMANDLINE), so use the unified `/cache:` form.
         args += "/cache:bitmap,glyph,offscreen"
-        // DisplayControl mid-session resize via `/dynamic-resolution` races
-        // with the GFX channel on Android — a frame arriving in the ~50 ms
-        // window after sendMonitorLayout is decoded against stale surfaces,
-        // returns CHANNEL_RC_NULL_DATA, and freerdp_check_event_handles tears
-        // the run loop down with "Failed to check FreeRDP file descriptor"
-        // (reproducible across both AVC444 and RFX/progressive paths). The
-        // gdi_resize patch in android_desktop_resize fixes the GDI primary
-        // buffer but not the GFX surface set.
-        //
-        // For auto-resolution profiles we drop /dynamic-resolution entirely
-        // — requestResolution() then returns false and SessionViewModel
-        // falls back to a clean disconnect+reconnect at the new size. Slower
-        // per rotation (1–2 s) but survives every rotation. Profiles pinned
-        // to a fixed resolution never resize mid-session, so /dynamic-resolution
-        // stays on there in case the server-side DPI hint helps with rendering.
-        if (!p.autoResolution) {
-            args += "/dynamic-resolution"
-        }
+        // Negotiate the DisplayControl DVC so requestResolution() can push
+        // a new monitor layout mid-session. Rotations and window-size
+        // changes go through SessionViewModel.onWindowSizeAvailable →
+        // requestResolution → LibFreeRDP.sendMonitorLayout instead of
+        // a full disconnect+reconnect cycle.
+        args += "/dynamic-resolution"
         val qualityTok = when (p.audioQuality) {
             com.crdp.core.rdp.engine.AudioQuality.Dynamic -> "dynamic"
             com.crdp.core.rdp.engine.AudioQuality.Medium -> "medium"

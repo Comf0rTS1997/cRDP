@@ -111,14 +111,24 @@ class SessionViewModel @Inject constructor(
     private var storedWindowW = 0
     private var storedWindowH = 0
 
-    // Debounces DisplayControl monitor-layout updates during DeX freeform drag-resize.
+    // Debounces DisplayControl monitor-layout updates during DeX freeform drag-resize
+    // AND back-to-back phone rotations.
     // `LaunchedEffect(windowW, windowH)` in SessionScreen fires on every intermediate
     // pixel size while the user is dragging the window edge — sending a fresh
     // sendMonitorLayout for each one floods the server's RDPEDISP DVC and the Win11
     // host drops the session. Hold the latest requested size in this job and apply
     // it once the gesture settles. Mirrors what mstsc / RDP Manager do internally.
+    //
+    // The window is generous (was 250ms) because the live-resize path through
+    // FreeRDP's GFX channel breaks down after 1–2 back-to-back resizes — the server
+    // sends ResetGraphics + new surfaces, and a second sendMonitorLayout arriving
+    // while the prior ResetGraphics is still settling tears the run loop down. The
+    // longer debounce gives the prior resize time to complete end-to-end (server
+    // resize + GFX surface re-issue + client codec reset) before the next request
+    // is sent, which dramatically reduces the failure rate at the cost of feeling
+    // a beat slower on the very first rotation.
     private var pendingResizeJob: Job? = null
-    private val resizeDebounceMs = 250L
+    private val resizeDebounceMs = 750L
 
     // Effective DPI percent the UI most recently asked for. 0 means "not yet known —
     // wait for the UI to report the first effective scale before opening the

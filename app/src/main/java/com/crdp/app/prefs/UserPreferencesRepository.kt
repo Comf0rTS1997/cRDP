@@ -72,6 +72,16 @@ data class AppSettings(
      * bandwidth; others ignore the probes harmlessly.
      */
     val networkAutoDetect: Boolean = true,
+    /** Show the remote desktop wallpaper. FreeRDP default is off; opt-in here. */
+    val showDesktopBackground: Boolean = false,
+    /** Show full window contents while dragging on the remote (vs outline only). */
+    val windowContentsWhileDragging: Boolean = false,
+    /** Show menu animations on the remote desktop. */
+    val menuAnimations: Boolean = false,
+    /** Negotiate the GDI glyph cache. Toggling off forces every glyph back as bitmap. */
+    val glyphCache: Boolean = true,
+    /** GFX encoder preference. See [Encoders]. */
+    val preferredEncoder: String = Encoders.AUTO,
     /**
      * Show the "Pointer captured. Double-tap Esc to release." snackbar each
      * time hardware pointer capture engages. Disable once the user knows the
@@ -134,6 +144,15 @@ object RenderBackends {
     const val HWUI = "HWUI Canvas"
     const val GLES = "GLES (high quality)"
     val OPTIONS = listOf(AUTO, HWUI, GLES)
+}
+
+object Encoders {
+    const val AUTO = "Auto"
+    const val AVC444 = "H.264 AVC444"
+    const val AVC420 = "H.264 AVC420"
+    const val PROGRESSIVE = "RemoteFX Progressive"
+    const val RFX = "RemoteFX (RFX)"
+    val OPTIONS = listOf(AUTO, AVC444, AVC420, PROGRESSIVE, RFX)
 }
 
 object RenderSamplingOptions {
@@ -254,6 +273,11 @@ class UserPreferencesRepository @Inject constructor(
     private val defaultClipboardSyncKey = booleanPreferencesKey("default_clipboard_sync")
     private val defaultPrinterShareKey = booleanPreferencesKey("default_printer_share")
     private val networkAutoDetectKey = booleanPreferencesKey("network_auto_detect")
+    private val showDesktopBackgroundKey = booleanPreferencesKey("show_desktop_background")
+    private val windowContentsWhileDraggingKey = booleanPreferencesKey("window_contents_dragging")
+    private val menuAnimationsKey = booleanPreferencesKey("menu_animations")
+    private val glyphCacheKey = booleanPreferencesKey("glyph_cache")
+    private val preferredEncoderKey = stringPreferencesKey("preferred_encoder")
     private val showCaptureHintKey = booleanPreferencesKey("show_capture_hint")
     private val printerShareNameKey = stringPreferencesKey("printer_share_name")
     /** Legacy boolean toggle. Read on first launch and migrated to [vaultProtectionKey]. */
@@ -295,6 +319,11 @@ class UserPreferencesRepository @Inject constructor(
             defaultClipboardSync = prefs[defaultClipboardSyncKey] ?: true,
             defaultPrinterShare = prefs[defaultPrinterShareKey] ?: false,
             networkAutoDetect = prefs[networkAutoDetectKey] ?: true,
+            showDesktopBackground = prefs[showDesktopBackgroundKey] ?: false,
+            windowContentsWhileDragging = prefs[windowContentsWhileDraggingKey] ?: false,
+            menuAnimations = prefs[menuAnimationsKey] ?: false,
+            glyphCache = prefs[glyphCacheKey] ?: true,
+            preferredEncoder = prefs[preferredEncoderKey]?.takeIf { it in Encoders.OPTIONS } ?: Encoders.AUTO,
             showCaptureHint = prefs[showCaptureHintKey] ?: true,
             printerShareName = prefs[printerShareNameKey]?.takeIf { it.isNotBlank() } ?: "cRDP",
             vaultProtection = run {
@@ -429,6 +458,27 @@ class UserPreferencesRepository @Inject constructor(
 
     suspend fun setNetworkAutoDetect(value: Boolean) {
         context.userPrefs.edit { it[networkAutoDetectKey] = value }
+    }
+
+    suspend fun setShowDesktopBackground(value: Boolean) {
+        context.userPrefs.edit { it[showDesktopBackgroundKey] = value }
+    }
+
+    suspend fun setWindowContentsWhileDragging(value: Boolean) {
+        context.userPrefs.edit { it[windowContentsWhileDraggingKey] = value }
+    }
+
+    suspend fun setMenuAnimations(value: Boolean) {
+        context.userPrefs.edit { it[menuAnimationsKey] = value }
+    }
+
+    suspend fun setGlyphCache(value: Boolean) {
+        context.userPrefs.edit { it[glyphCacheKey] = value }
+    }
+
+    suspend fun setPreferredEncoder(value: String) {
+        if (value !in Encoders.OPTIONS) return
+        context.userPrefs.edit { it[preferredEncoderKey] = value }
     }
 
     suspend fun setShowCaptureHint(value: Boolean) {

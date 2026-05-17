@@ -737,15 +737,33 @@ class AFreeRdpEngine @Inject constructor(
         // animations and scrolling end up sending raw pixels instead of an H.264
         // video stream. `/network:lan` alone does NOT pick H.264 even when the
         // codec is present.
-        if (LibFreeRDP.hasH264Support()) {
-            args += "/gfx:AVC444,progressive,RFX"
-        } else {
-            args += "/gfx:progressive,RFX"
+        val h264 = LibFreeRDP.hasH264Support()
+        val gfxTokens = when (p.preferredEncoder) {
+            com.crdp.core.rdp.engine.PreferredEncoder.Auto ->
+                if (h264) "AVC444,progressive,RFX" else "progressive,RFX"
+            com.crdp.core.rdp.engine.PreferredEncoder.Avc444 ->
+                if (h264) "AVC444,progressive,RFX" else "progressive,RFX"
+            com.crdp.core.rdp.engine.PreferredEncoder.Avc420 ->
+                if (h264) "AVC420,progressive,RFX" else "progressive,RFX"
+            com.crdp.core.rdp.engine.PreferredEncoder.Progressive -> "progressive"
+            com.crdp.core.rdp.engine.PreferredEncoder.Rfx -> "RFX"
         }
+        args += "/gfx:$gfxTokens"
         // The deprecated `/bitmap-cache`, `/glyph-cache`, `/offscreen-cache` flags
         // are absent from this libfreerdp build (built without
         // WITH_FREERDP_DEPRECATED_COMMANDLINE), so use the unified `/cache:` form.
-        args += "/cache:bitmap,glyph,offscreen"
+        val caches = buildList {
+            add("bitmap")
+            if (p.glyphCache) add("glyph")
+            add("offscreen")
+        }.joinToString(",")
+        args += "/cache:$caches"
+        // FreeRDP performance toggles (MS-RDPBCGR §2.2.1.11.1.1.1 — TS_INFO_PACKET
+        // performance flags). Default OFF in FreeRDP matches PERF_DISABLE_* on, so
+        // these are opt-in user-visible quality switches.
+        args += if (p.showDesktopBackground) "+wallpaper" else "-wallpaper"
+        args += if (p.windowContentsWhileDragging) "+window-drag" else "-window-drag"
+        args += if (p.menuAnimations) "+menu-anims" else "-menu-anims"
         // Negotiate the DisplayControl DVC so requestResolution() can push
         // a new monitor layout mid-session. Rotations and window-size
         // changes go through SessionViewModel.onWindowSizeAvailable →

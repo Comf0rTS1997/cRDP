@@ -24,7 +24,9 @@ import com.crdp.core.rdp.model.ConnectionProfile
 import com.crdp.core.rdp.model.DirectConnectionProfile
 import com.crdp.core.rdp.model.SessionState
 import com.crdp.core.rdp.engine.AudioQuality as EngineAudioQuality
+import com.crdp.core.rdp.engine.PreferredEncoder as EnginePreferredEncoder
 import com.crdp.core.rdp.model.AudioQuality as ProfileAudioQuality
+import com.crdp.core.rdp.model.PreferredEncoder as ProfilePreferredEncoder
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -121,6 +123,17 @@ class DirectRdpSession @Inject constructor(
                 keyboardLayoutId = profile.keyboardLayoutId,
                 autoResolution = profile.autoResolution,
                 networkAutoDetect = profile.networkAutoDetect,
+                showDesktopBackground = profile.showDesktopBackgroundOverride ?: false,
+                windowContentsWhileDragging = profile.windowContentsWhileDraggingOverride ?: false,
+                menuAnimations = profile.menuAnimationsOverride ?: false,
+                glyphCache = profile.glyphCache,
+                preferredEncoder = when (profile.preferredEncoder) {
+                    ProfilePreferredEncoder.UseAppDefault, ProfilePreferredEncoder.Auto -> EnginePreferredEncoder.Auto
+                    ProfilePreferredEncoder.Avc444 -> EnginePreferredEncoder.Avc444
+                    ProfilePreferredEncoder.Avc420 -> EnginePreferredEncoder.Avc420
+                    ProfilePreferredEncoder.Progressive -> EnginePreferredEncoder.Progressive
+                    ProfilePreferredEncoder.Rfx -> EnginePreferredEncoder.Rfx
+                },
             ),
         )
     }

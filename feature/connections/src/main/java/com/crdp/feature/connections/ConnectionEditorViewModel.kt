@@ -55,6 +55,9 @@ data class EditorUiState(
     val clipboardSyncOverride: Boolean? = null,
     /** null = use app default; expose a virtual printer to the remote session. */
     val printerShareOverride: Boolean? = null,
+    val showDesktopBackgroundOverride: Boolean? = null,
+    val windowContentsWhileDraggingOverride: Boolean? = null,
+    val menuAnimationsOverride: Boolean? = null,
     val audioQuality: AudioQuality = AudioQuality.UseAppDefault,
     val cameraMode: CameraMode = CameraMode.UseAppDefault,
     /** Native rdpecam device id when cameraMode == Specific; null otherwise. */
@@ -115,6 +118,9 @@ class ConnectionEditorViewModel @Inject constructor(
     fun updateMicrophoneOverride(value: Boolean?) = _state.update { it.copy(microphoneOverride = value) }
     fun updateClipboardSyncOverride(value: Boolean?) = _state.update { it.copy(clipboardSyncOverride = value) }
     fun updatePrinterShareOverride(value: Boolean?) = _state.update { it.copy(printerShareOverride = value) }
+    fun updateShowDesktopBackgroundOverride(value: Boolean?) = _state.update { it.copy(showDesktopBackgroundOverride = value) }
+    fun updateWindowContentsWhileDraggingOverride(value: Boolean?) = _state.update { it.copy(windowContentsWhileDraggingOverride = value) }
+    fun updateMenuAnimationsOverride(value: Boolean?) = _state.update { it.copy(menuAnimationsOverride = value) }
     fun updateAudioQuality(value: AudioQuality) = _state.update { it.copy(audioQuality = value) }
     fun updateCameraMode(value: CameraMode) = _state.update { it.copy(cameraMode = value) }
     fun updateCameraDeviceId(value: String?) = _state.update { it.copy(cameraDeviceId = value?.takeIf { v -> v.isNotBlank() }) }
@@ -175,6 +181,9 @@ class ConnectionEditorViewModel @Inject constructor(
                     cameraMode = s.cameraMode,
                     cameraDeviceId = s.cameraDeviceId,
                     printerShareOverride = s.printerShareOverride,
+                    showDesktopBackgroundOverride = s.showDesktopBackgroundOverride,
+                    windowContentsWhileDraggingOverride = s.windowContentsWhileDraggingOverride,
+                    menuAnimationsOverride = s.menuAnimationsOverride,
                 )
                 EditorMode.Gateway -> GatewayConnectionProfile(
                     id = id,
@@ -194,6 +203,9 @@ class ConnectionEditorViewModel @Inject constructor(
                     cameraMode = s.cameraMode,
                     cameraDeviceId = s.cameraDeviceId,
                     printerShareOverride = s.printerShareOverride,
+                    showDesktopBackgroundOverride = s.showDesktopBackgroundOverride,
+                    windowContentsWhileDraggingOverride = s.windowContentsWhileDraggingOverride,
+                    menuAnimationsOverride = s.menuAnimationsOverride,
                 )
             }
             repository.upsert(profile)
@@ -226,6 +238,9 @@ class ConnectionEditorViewModel @Inject constructor(
             cameraMode = p.cameraMode,
             cameraDeviceId = p.cameraDeviceId,
             printerShareOverride = p.printerShareOverride,
+            showDesktopBackgroundOverride = p.showDesktopBackgroundOverride,
+            windowContentsWhileDraggingOverride = p.windowContentsWhileDraggingOverride,
+            menuAnimationsOverride = p.menuAnimationsOverride,
             isNew = false,
             existingId = id,
         )
@@ -247,6 +262,9 @@ class ConnectionEditorViewModel @Inject constructor(
             cameraMode = p.cameraMode,
             cameraDeviceId = p.cameraDeviceId,
             printerShareOverride = p.printerShareOverride,
+            showDesktopBackgroundOverride = p.showDesktopBackgroundOverride,
+            windowContentsWhileDraggingOverride = p.windowContentsWhileDraggingOverride,
+            menuAnimationsOverride = p.menuAnimationsOverride,
             isNew = false,
             existingId = id,
         )

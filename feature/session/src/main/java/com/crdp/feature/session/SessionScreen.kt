@@ -186,6 +186,16 @@ data class SessionUserSettings(
     val auxKeyRowKeys: Set<String> = AuxKeys.DEFAULT_ENABLED,
     /** App-wide toggle for `/network:auto` NetworkAutoDetect at connect time. */
     val networkAutoDetect: Boolean = true,
+    /** Show remote desktop wallpaper (`+wallpaper`). */
+    val showDesktopBackground: Boolean = false,
+    /** Show full window contents while dragging on the remote (`+window-drag`). */
+    val windowContentsWhileDragging: Boolean = false,
+    /** Show menu animations on the remote (`+menu-anims`). */
+    val menuAnimations: Boolean = false,
+    /** Negotiate the GDI glyph cache. */
+    val glyphCache: Boolean = true,
+    /** GFX encoder selection (label from [com.crdp.app.prefs.Encoders]). */
+    val preferredEncoder: String = "Auto",
     /** Show the "Pointer captured — double-tap Esc to release" snackbar on capture engage. */
     val showCaptureHint: Boolean = true,
 )
@@ -337,6 +347,33 @@ fun SessionRoute(
 
     LaunchedEffect(settings.networkAutoDetect) {
         viewModel.setNetworkAutoDetectHint(settings.networkAutoDetect)
+    }
+
+    LaunchedEffect(settings.showDesktopBackground) {
+        viewModel.setShowDesktopBackgroundHint(settings.showDesktopBackground)
+    }
+
+    LaunchedEffect(settings.windowContentsWhileDragging) {
+        viewModel.setWindowContentsWhileDraggingHint(settings.windowContentsWhileDragging)
+    }
+
+    LaunchedEffect(settings.menuAnimations) {
+        viewModel.setMenuAnimationsHint(settings.menuAnimations)
+    }
+
+    LaunchedEffect(settings.glyphCache) {
+        viewModel.setGlyphCacheHint(settings.glyphCache)
+    }
+
+    LaunchedEffect(settings.preferredEncoder) {
+        val mapped = when (settings.preferredEncoder) {
+            "H.264 AVC444" -> com.crdp.core.rdp.engine.PreferredEncoder.Avc444
+            "H.264 AVC420" -> com.crdp.core.rdp.engine.PreferredEncoder.Avc420
+            "RemoteFX Progressive" -> com.crdp.core.rdp.engine.PreferredEncoder.Progressive
+            "RemoteFX (RFX)" -> com.crdp.core.rdp.engine.PreferredEncoder.Rfx
+            else -> com.crdp.core.rdp.engine.PreferredEncoder.Auto
+        }
+        viewModel.setPreferredEncoderHint(mapped)
     }
 
     // Mic is a runtime-prompt permission. Only request when the resolved decision

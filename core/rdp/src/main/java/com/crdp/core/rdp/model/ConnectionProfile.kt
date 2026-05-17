@@ -18,6 +18,10 @@ enum class AudioQuality { UseAppDefault, Dynamic, Medium, High }
 @Serializable
 enum class CameraMode { UseAppDefault, Disabled, BuiltInFront, BuiltInBack, External, Specific }
 
+/** GFX encoder choice at the profile layer. `UseAppDefault` defers to settings. */
+@Serializable
+enum class PreferredEncoder { UseAppDefault, Auto, Avc444, Avc420, Progressive, Rfx }
+
 @Serializable
 @SerialName("direct")
 data class DirectConnectionProfile(
@@ -54,6 +58,12 @@ data class DirectConnectionProfile(
     val cameraDeviceId: String? = null,
     /** null = use app default; expose a virtual printer to the remote session. */
     val printerShareOverride: Boolean? = null,
+    /** null = use app default; show the remote desktop wallpaper. */
+    val showDesktopBackgroundOverride: Boolean? = null,
+    /** null = use app default; show full window contents while dragging vs outline only. */
+    val windowContentsWhileDraggingOverride: Boolean? = null,
+    /** null = use app default; show menu animations on the remote desktop. */
+    val menuAnimationsOverride: Boolean? = null,
     /**
      * Windows keyboard layout id (e.g. 0x0409). 0 = use app default (resolved
      * from settings at connect time, mirroring how audio/camera defaults are
@@ -67,6 +77,10 @@ data class DirectConnectionProfile(
      * links; false → fixed `/network:lan` baseline (legacy behavior).
      */
     val networkAutoDetect: Boolean = true,
+    /** Negotiate the GDI glyph cache. App-level setting; stamped at connect time. */
+    val glyphCache: Boolean = true,
+    /** Encoder preference. `UseAppDefault` (the default) defers to app settings. */
+    val preferredEncoder: PreferredEncoder = PreferredEncoder.UseAppDefault,
 ) : ConnectionProfile()
 
 @Serializable
@@ -89,6 +103,9 @@ data class GatewayConnectionProfile(
     val cameraMode: CameraMode = CameraMode.UseAppDefault,
     val cameraDeviceId: String? = null,
     val printerShareOverride: Boolean? = null,
+    val showDesktopBackgroundOverride: Boolean? = null,
+    val windowContentsWhileDraggingOverride: Boolean? = null,
+    val menuAnimationsOverride: Boolean? = null,
     /** See [DirectConnectionProfile.keyboardLayoutId]. */
     val keyboardLayoutId: Int = 0,
 ) : ConnectionProfile()

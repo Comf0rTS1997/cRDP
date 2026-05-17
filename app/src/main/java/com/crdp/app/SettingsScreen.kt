@@ -70,6 +70,7 @@ import com.crdp.app.prefs.AudioQualities
 import com.crdp.app.prefs.CameraModes
 import com.crdp.app.prefs.AutoLockVault
 import com.crdp.app.prefs.DpiScales
+import com.crdp.app.prefs.Encoders
 import com.crdp.app.prefs.KeyboardLayouts
 import com.crdp.app.prefs.RenderBackends
 import com.crdp.app.prefs.RenderSamplingOptions
@@ -92,6 +93,7 @@ private sealed interface ChooserKind {
     data object AudioPlayback : ChooserKind
     data object AudioQuality : ChooserKind
     data object Camera : ChooserKind
+    data object Encoder : ChooserKind
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -120,6 +122,11 @@ fun SettingsScreen(
     onDefaultClipboardSync: (Boolean) -> Unit,
     onDefaultPrinterShare: (Boolean) -> Unit,
     onNetworkAutoDetect: (Boolean) -> Unit,
+    onShowDesktopBackground: (Boolean) -> Unit,
+    onWindowContentsWhileDragging: (Boolean) -> Unit,
+    onMenuAnimations: (Boolean) -> Unit,
+    onGlyphCache: (Boolean) -> Unit,
+    onPreferredEncoder: (String) -> Unit,
     onShowCaptureHint: (Boolean) -> Unit,
     onOpenVault: () -> Unit,
     onOpenAbout: () -> Unit,
@@ -217,6 +224,59 @@ fun SettingsScreen(
                         onCheckedChange = onNetworkAutoDetect,
                     )
                 },
+            )
+
+            SectionHeader("Visual effects")
+            SettingRow(
+                icon = Icons.Default.DesktopWindows,
+                title = "Show desktop background",
+                subtitle = "Render the remote wallpaper instead of a solid color",
+                trailing = {
+                    Switch(
+                        checked = appSettings.showDesktopBackground,
+                        onCheckedChange = onShowDesktopBackground,
+                    )
+                },
+            )
+            SettingRow(
+                icon = Icons.Default.DesktopWindows,
+                title = "Window contents while dragging",
+                subtitle = "Show full window contents instead of an outline",
+                trailing = {
+                    Switch(
+                        checked = appSettings.windowContentsWhileDragging,
+                        onCheckedChange = onWindowContentsWhileDragging,
+                    )
+                },
+            )
+            SettingRow(
+                icon = Icons.Default.Bolt,
+                title = "Menu animations",
+                subtitle = "Animate menus and tooltips on the remote",
+                trailing = {
+                    Switch(
+                        checked = appSettings.menuAnimations,
+                        onCheckedChange = onMenuAnimations,
+                    )
+                },
+            )
+            SettingRow(
+                icon = Icons.Default.Tune,
+                title = "Glyph cache",
+                subtitle = "Cache rendered glyphs server-side (recommended)",
+                trailing = {
+                    Switch(
+                        checked = appSettings.glyphCache,
+                        onCheckedChange = onGlyphCache,
+                    )
+                },
+            )
+            SettingRow(
+                icon = Icons.Default.Bolt,
+                title = "Encoder",
+                subtitle = "GFX codec FreeRDP negotiates with the server",
+                value = appSettings.preferredEncoder,
+                onClick = { chooser = ChooserKind.Encoder },
             )
 
             SectionHeader("Audio")
@@ -403,6 +463,12 @@ fun SettingsScreen(
                     options = CameraModes.OPTIONS,
                     selected = appSettings.defaultCameraMode,
                     onSelect = { onDefaultCameraMode(it); dismiss() },
+                )
+                ChooserKind.Encoder -> ChooserList(
+                    title = "Encoder",
+                    options = Encoders.OPTIONS,
+                    selected = appSettings.preferredEncoder,
+                    onSelect = { onPreferredEncoder(it); dismiss() },
                 )
             }
         }

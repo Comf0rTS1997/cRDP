@@ -166,6 +166,26 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch { userPreferencesRepository.setNetworkAutoDetect(value) }
     }
 
+    fun setShowDesktopBackground(value: Boolean) {
+        viewModelScope.launch { userPreferencesRepository.setShowDesktopBackground(value) }
+    }
+
+    fun setWindowContentsWhileDragging(value: Boolean) {
+        viewModelScope.launch { userPreferencesRepository.setWindowContentsWhileDragging(value) }
+    }
+
+    fun setMenuAnimations(value: Boolean) {
+        viewModelScope.launch { userPreferencesRepository.setMenuAnimations(value) }
+    }
+
+    fun setGlyphCache(value: Boolean) {
+        viewModelScope.launch { userPreferencesRepository.setGlyphCache(value) }
+    }
+
+    fun setPreferredEncoder(value: String) {
+        viewModelScope.launch { userPreferencesRepository.setPreferredEncoder(value) }
+    }
+
     fun setShowCaptureHint(value: Boolean) {
         viewModelScope.launch { userPreferencesRepository.setShowCaptureHint(value) }
     }

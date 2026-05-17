@@ -419,6 +419,21 @@ fun ConnectionEditorRoute(
                     label = { Text("Off") },
                 )
             }
+            VisualToggleRow(
+                label = "Desktop background",
+                value = state.showDesktopBackgroundOverride,
+                onChange = viewModel::updateShowDesktopBackgroundOverride,
+            )
+            VisualToggleRow(
+                label = "Window contents while dragging",
+                value = state.windowContentsWhileDraggingOverride,
+                onChange = viewModel::updateWindowContentsWhileDraggingOverride,
+            )
+            VisualToggleRow(
+                label = "Menu animations",
+                value = state.menuAnimationsOverride,
+                onChange = viewModel::updateMenuAnimationsOverride,
+            )
             Text(
                 "Quality",
                 style = MaterialTheme.typography.bodySmall,
@@ -629,6 +644,40 @@ private fun androidx.compose.material3.ExposedDropdownMenuBoxScope.ExposedDropdo
     onDismissRequest: () -> Unit,
     content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
 ) = ExposedDropdownMenu(expanded = expanded, onDismissRequest = onDismissRequest, content = content)
+
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun VisualToggleRow(
+    label: String,
+    value: Boolean?,
+    onChange: (Boolean?) -> Unit,
+) {
+    Text(
+        label,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        FilterChip(
+            selected = value == null,
+            onClick = { onChange(null) },
+            label = { Text("App default") },
+        )
+        FilterChip(
+            selected = value == true,
+            onClick = { onChange(true) },
+            label = { Text("On") },
+        )
+        FilterChip(
+            selected = value == false,
+            onClick = { onChange(false) },
+            label = { Text("Off") },
+        )
+    }
+}
 
 @Composable
 private fun SectionLabel(text: String) {

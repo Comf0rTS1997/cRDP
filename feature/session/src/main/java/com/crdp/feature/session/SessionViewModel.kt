@@ -168,6 +168,14 @@ class SessionViewModel @Inject constructor(
     // clipboard/printer.
     private val _networkAutoDetectHint = MutableStateFlow<Boolean?>(null)
 
+    // App-level visual / encoder defaults. All five are connect-time switches in
+    // FreeRDP argv, so we use the same wait-for-hint pattern.
+    private val _showDesktopBackgroundHint = MutableStateFlow<Boolean?>(null)
+    private val _windowContentsWhileDraggingHint = MutableStateFlow<Boolean?>(null)
+    private val _menuAnimationsHint = MutableStateFlow<Boolean?>(null)
+    private val _glyphCacheHint = MutableStateFlow<Boolean?>(null)
+    private val _preferredEncoderHint = MutableStateFlow<com.crdp.core.rdp.engine.PreferredEncoder?>(null)
+
     private fun activatePort(port: RdpSessionPort) {
         activePort = port
         challengeForwardJob?.cancel()
@@ -204,6 +212,11 @@ class SessionViewModel @Inject constructor(
             _printerShareHint.filter { it != null }.first()
             _keyboardLayoutHint.filter { it != null }.first()
             _networkAutoDetectHint.filter { it != null }.first()
+            _showDesktopBackgroundHint.filter { it != null }.first()
+            _windowContentsWhileDraggingHint.filter { it != null }.first()
+            _menuAnimationsHint.filter { it != null }.first()
+            _glyphCacheHint.filter { it != null }.first()
+            _preferredEncoderHint.filter { it != null }.first()
             val isAuto = when (profile) {
                 is DirectConnectionProfile -> profile.autoResolution
                 is GatewayConnectionProfile -> profile.autoResolution
@@ -219,12 +232,12 @@ class SessionViewModel @Inject constructor(
                 if (w > 0 && h > 0) {
                     autoProfile = null
                     autoPort = null
-                    val resolved = applyEffectiveNetwork(applyEffectiveKeyboard(applyEffectivePrinter(applyEffectiveClipboard(applyEffectiveCamera(applyEffectiveAudio(applyEffectiveScale(
+                    val resolved = applyEffectiveDisplay(applyEffectiveNetwork(applyEffectiveKeyboard(applyEffectivePrinter(applyEffectiveClipboard(applyEffectiveCamera(applyEffectiveAudio(applyEffectiveScale(
                         when (profile) {
                             is DirectConnectionProfile -> profile.copy(width = w, height = h)
                             is GatewayConnectionProfile -> profile.copy(width = w, height = h)
                         },
-                    )))))))
+                    ))))))))
                     port.connect(resolved).onFailure { e ->
                         _loadError.value = e.message ?: "Connection failed"
                     }.onSuccess {
@@ -235,7 +248,7 @@ class SessionViewModel @Inject constructor(
             } else {
                 val port = sessionFactory.portFor(profile)
                 activatePort(port)
-                val resolved = applyEffectiveNetwork(applyEffectiveKeyboard(applyEffectivePrinter(applyEffectiveClipboard(applyEffectiveCamera(applyEffectiveAudio(applyEffectiveScale(profile)))))))
+                val resolved = applyEffectiveDisplay(applyEffectiveNetwork(applyEffectiveKeyboard(applyEffectivePrinter(applyEffectiveClipboard(applyEffectiveCamera(applyEffectiveAudio(applyEffectiveScale(profile))))))))
                 port.connect(resolved).onFailure { e ->
                     _loadError.value = e.message ?: "Connection failed"
                 }.onSuccess {
@@ -383,6 +396,51 @@ class SessionViewModel @Inject constructor(
     }
 
     /**
+     * Resolve the three visual perf toggles (wallpaper / full-window-drag /
+     * menu-anims) plus glyph-cache and encoder choice into the profile. Per-
+     * profile overrides take precedence; nulls fall through to the app default.
+     * Gateway is left alone — its session path doesn't drive the FreeRDP engine.
+     */
+    private fun applyEffectiveDisplay(profile: ConnectionProfile): ConnectionProfile {
+        val showBg = _showDesktopBackgroundHint.value ?: false
+        val winDrag = _windowContentsWhileDraggingHint.value ?: false
+        val menuAnim = _menuAnimationsHint.value ?: false
+        val glyph = _glyphCacheHint.value ?: true
+        val encoder = _preferredEncoderHint.value ?: com.crdp.core.rdp.engine.PreferredEncoder.Auto
+        val mappedEncoder = when (encoder) {
+            com.crdp.core.rdp.engine.PreferredEncoder.Auto -> com.crdp.core.rdp.model.PreferredEncoder.Auto
+            com.crdp.core.rdp.engine.PreferredEncoder.Avc444 -> com.crdp.core.rdp.model.PreferredEncoder.Avc444
+            com.crdp.core.rdp.engine.PreferredEncoder.Avc420 -> com.crdp.core.rdp.model.PreferredEncoder.Avc420
+            com.crdp.core.rdp.engine.PreferredEncoder.Progressive -> com.crdp.core.rdp.model.PreferredEncoder.Progressive
+            com.crdp.core.rdp.engine.PreferredEncoder.Rfx -> com.crdp.core.rdp.model.PreferredEncoder.Rfx
+        }
+        return when (profile) {
+            is DirectConnectionProfile -> profile.copy(
+                showDesktopBackgroundOverride = profile.showDesktopBackgroundOverride ?: showBg,
+                windowContentsWhileDraggingOverride = profile.windowContentsWhileDraggingOverride ?: winDrag,
+                menuAnimationsOverride = profile.menuAnimationsOverride ?: menuAnim,
+                glyphCache = glyph,
+                preferredEncoder = if (profile.preferredEncoder == com.crdp.core.rdp.model.PreferredEncoder.UseAppDefault) {
+                    mappedEncoder
+                } else profile.preferredEncoder,
+            )
+            is GatewayConnectionProfile -> profile.copy(
+                showDesktopBackgroundOverride = profile.showDesktopBackgroundOverride ?: showBg,
+                windowContentsWhileDraggingOverride = profile.windowContentsWhileDraggingOverride ?: winDrag,
+                menuAnimationsOverride = profile.menuAnimationsOverride ?: menuAnim,
+            )
+        }
+    }
+
+    fun setShowDesktopBackgroundHint(enabled: Boolean) { _showDesktopBackgroundHint.value = enabled }
+    fun setWindowContentsWhileDraggingHint(enabled: Boolean) { _windowContentsWhileDraggingHint.value = enabled }
+    fun setMenuAnimationsHint(enabled: Boolean) { _menuAnimationsHint.value = enabled }
+    fun setGlyphCacheHint(enabled: Boolean) { _glyphCacheHint.value = enabled }
+    fun setPreferredEncoderHint(value: com.crdp.core.rdp.engine.PreferredEncoder) {
+        _preferredEncoderHint.value = value
+    }
+
+    /**
      * Stamp the connect-time keyboard layout id onto the profile. Profiles
      * stored with the default 0 inherit the app-level layout the UI has just
      * pushed; a non-zero stored id (none today, but future per-profile override)
@@ -506,12 +564,12 @@ class SessionViewModel @Inject constructor(
         autoPort = null
         // activatePort already called when port was created; no need to call again.
         viewModelScope.launch {
-            val resolved = applyEffectiveNetwork(applyEffectiveKeyboard(applyEffectivePrinter(applyEffectiveClipboard(applyEffectiveCamera(applyEffectiveAudio(applyEffectiveScale(
+            val resolved = applyEffectiveDisplay(applyEffectiveNetwork(applyEffectiveKeyboard(applyEffectivePrinter(applyEffectiveClipboard(applyEffectiveCamera(applyEffectiveAudio(applyEffectiveScale(
                 when (profile) {
                     is DirectConnectionProfile -> profile.copy(width = w, height = h)
                     is GatewayConnectionProfile -> profile.copy(width = w, height = h)
                 },
-            )))))))
+            ))))))))
             port.connect(resolved).onFailure { e ->
                 _loadError.value = e.message ?: "Connection failed"
             }.onSuccess {
@@ -532,7 +590,7 @@ class SessionViewModel @Inject constructor(
                 is DirectConnectionProfile -> profile.copy(width = w, height = h)
                 is GatewayConnectionProfile -> profile.copy(width = w, height = h)
             }
-            val resolved = applyEffectiveNetwork(applyEffectiveKeyboard(applyEffectivePrinter(applyEffectiveClipboard(applyEffectiveCamera(applyEffectiveAudio(
+            val resolved = applyEffectiveDisplay(applyEffectiveNetwork(applyEffectiveKeyboard(applyEffectivePrinter(applyEffectiveClipboard(applyEffectiveCamera(applyEffectiveAudio(
                 if (overrideScale != null) {
                     when (resized) {
                         is DirectConnectionProfile -> resized.copy(desktopScaleFactor = overrideScale)
@@ -541,7 +599,7 @@ class SessionViewModel @Inject constructor(
                 } else {
                     applyEffectiveScale(resized)
                 }
-            ))))))
+            )))))))
             val port = sessionFactory.portFor(resolved)
             activatePort(port)
             port.connect(resolved).onFailure { e ->

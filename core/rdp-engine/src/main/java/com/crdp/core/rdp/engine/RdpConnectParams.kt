@@ -66,4 +66,20 @@ data class RdpConnectParams(
      * low-bandwidth links; servers without it ignore the probes.
      */
     val networkAutoDetect: Boolean = true,
+    /** Show the remote desktop wallpaper (`+wallpaper` vs `-wallpaper`). */
+    val showDesktopBackground: Boolean = false,
+    /** Full window contents while dragging vs outline only (`+window-drag`). */
+    val windowContentsWhileDragging: Boolean = false,
+    /** Show menu animations on the remote desktop (`+menu-anims`). */
+    val menuAnimations: Boolean = false,
+    /** Negotiate the GDI glyph cache. When false, the cache is omitted from `/cache:`. */
+    val glyphCache: Boolean = true,
+    /** GFX encoder preference. See [PreferredEncoder]. */
+    val preferredEncoder: PreferredEncoder = PreferredEncoder.Auto,
 )
+
+/**
+ * Encoder pipeline the engine asks FreeRDP to negotiate via `/gfx:`. `Auto`
+ * picks AVC444 when H.264 is available, falling back to Progressive+RFX.
+ */
+enum class PreferredEncoder { Auto, Avc444, Avc420, Progressive, Rfx }

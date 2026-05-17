@@ -58,4 +58,12 @@ data class RdpConnectParams(
      * "Failed to check FreeRDP file descriptor".
      */
     val autoResolution: Boolean = false,
+    /**
+     * Enable MS-RDPBCGR network auto-detect: the engine emits `/network:auto`
+     * instead of a fixed `/network:lan`, so the connection negotiates
+     * NetworkAutoDetect (RTT + bandwidth probes). Servers with adaptive GFX
+     * (Win8+/Server 2012+) use the measurements to throttle H.264 quality on
+     * low-bandwidth links; servers without it ignore the probes.
+     */
+    val networkAutoDetect: Boolean = true,
 )

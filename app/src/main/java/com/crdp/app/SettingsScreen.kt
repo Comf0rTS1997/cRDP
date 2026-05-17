@@ -85,7 +85,6 @@ import kotlinx.coroutines.launch
 private sealed interface ChooserKind {
     data object Resolution : ChooserKind
     data object Keyboard : ChooserKind
-    data object AutoLock : ChooserKind
     data object RenderBackend : ChooserKind
     data object RenderSampling : ChooserKind
     data object DefaultDpi : ChooserKind
@@ -93,7 +92,6 @@ private sealed interface ChooserKind {
     data object AudioPlayback : ChooserKind
     data object AudioQuality : ChooserKind
     data object Camera : ChooserKind
-    data object VaultProtectionPick : ChooserKind
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -106,23 +104,9 @@ fun SettingsScreen(
     onHapticFeedback: (Boolean) -> Unit,
     onOpenKeyboardRow: () -> Unit,
     onOpenMouseSettings: () -> Unit,
-    /**
-     * Requests a change to the vault protection mode. The caller is responsible
-     * for the actual repository call + status surfacing; the screen invokes
-     * this and shows the result via [onVaultProtectionResult]. For
-     * [VaultProtection.Password] the second arg carries the user's passphrase
-     * (already validated against a confirmation field by this screen) and must
-     * be zeroed by the receiver.
-     */
-    onVaultProtectionChange: (VaultProtection, CharArray?) -> Unit,
-    /** Outcome of the most recent [onVaultProtectionChange] for inline error display. */
-    vaultProtectionResult: SetProtectionOutcome? = null,
-    /** Null until the runtime probe finishes; true if the device can host an auth-bound key. */
-    deviceKeySupported: Boolean? = null,
     onAutoDisconnectIdle: (Boolean) -> Unit,
     onDefaultResolution: (String) -> Unit,
     onKeyboardLayout: (String) -> Unit,
-    onAutoLockVaultMinutes: (Int) -> Unit,
     onRenderBackend: (String) -> Unit,
     onRenderSampling: (String) -> Unit,
     onAddCustomResolution: (String) -> Unit,
@@ -135,6 +119,8 @@ fun SettingsScreen(
     onDefaultCameraMode: (String) -> Unit,
     onDefaultClipboardSync: (Boolean) -> Unit,
     onDefaultPrinterShare: (Boolean) -> Unit,
+    onNetworkAutoDetect: (Boolean) -> Unit,
+    onShowCaptureHint: (Boolean) -> Unit,
     onOpenVault: () -> Unit,
     onOpenAbout: () -> Unit,
     onBack: () -> Unit,
@@ -221,6 +207,17 @@ fun SettingsScreen(
                     )
                 },
             )
+            SettingRow(
+                icon = Icons.Default.Bolt,
+                title = "Adaptive bandwidth",
+                subtitle = "Probe RTT/bandwidth so the server can throttle on slow links",
+                trailing = {
+                    Switch(
+                        checked = appSettings.networkAutoDetect,
+                        onCheckedChange = onNetworkAutoDetect,
+                    )
+                },
+            )
 
             SectionHeader("Audio")
             SettingRow(
@@ -278,6 +275,17 @@ fun SettingsScreen(
                 onClick = onOpenMouseSettings,
             )
             SettingRow(
+                icon = Icons.Default.Mouse,
+                title = "Pointer-capture hint",
+                subtitle = "Show \"Double-tap Esc to release\" each time capture engages",
+                trailing = {
+                    Switch(
+                        checked = appSettings.showCaptureHint,
+                        onCheckedChange = onShowCaptureHint,
+                    )
+                },
+            )
+            SettingRow(
                 icon = Icons.Default.Keyboard,
                 title = "Keyboard helper row",
                 subtitle = "Keys shown above the soft keyboard",
@@ -287,25 +295,12 @@ fun SettingsScreen(
             SectionHeader("Vault")
             SettingRow(
                 icon = Icons.Default.Lock,
-                title = "Saved credentials",
-                subtitle = "View and manage stored passwords",
+                title = "Vault",
+                subtitle = "Saved credentials, protection, auto-lock",
                 onClick = onOpenVault,
             )
 
             SectionHeader("Security")
-            SettingRow(
-                icon = Icons.Default.Lock,
-                title = "Vault protection",
-                subtitle = vaultProtectionSubtitle(appSettings.vaultProtection, deviceKeySupported),
-                value = vaultProtectionLabel(appSettings.vaultProtection),
-                onClick = { chooser = ChooserKind.VaultProtectionPick },
-            )
-            SettingRow(
-                icon = Icons.Default.Lock,
-                title = "Auto-lock vault",
-                value = AutoLockVault.label(appSettings.autoLockVaultMinutes),
-                onClick = { chooser = ChooserKind.AutoLock },
-            )
             SettingRow(
                 icon = Icons.Default.Bolt,
                 title = "Auto-disconnect idle",
@@ -369,16 +364,6 @@ fun SettingsScreen(
                     selected = appSettings.keyboardLayout,
                     onSelect = { onKeyboardLayout(it); dismiss() },
                 )
-                ChooserKind.AutoLock -> ChooserList(
-                    title = "Auto-lock vault",
-                    options = AutoLockVault.OPTIONS.map { AutoLockVault.label(it) },
-                    selected = AutoLockVault.label(appSettings.autoLockVaultMinutes),
-                    onSelect = { label ->
-                        val value = AutoLockVault.OPTIONS.first { AutoLockVault.label(it) == label }
-                        onAutoLockVaultMinutes(value)
-                        dismiss()
-                    },
-                )
                 ChooserKind.RenderBackend -> ChooserList(
                     title = "Render backend",
                     options = RenderBackends.OPTIONS,
@@ -419,34 +404,8 @@ fun SettingsScreen(
                     selected = appSettings.defaultCameraMode,
                     onSelect = { onDefaultCameraMode(it); dismiss() },
                 )
-                ChooserKind.VaultProtectionPick -> VaultProtectionChooser(
-                    current = appSettings.vaultProtection,
-                    deviceKeySupported = deviceKeySupported,
-                    onSelect = { target, password ->
-                        onVaultProtectionChange(target, password)
-                        dismiss()
-                    },
-                )
             }
         }
-    }
-
-    // Surface a transient error if the last protection change failed. The
-    // chooser itself is closed by now; show a non-blocking dialog so the user
-    // knows why nothing changed.
-    var dismissedResult by remember(vaultProtectionResult) { mutableStateOf(false) }
-    val showResultError = vaultProtectionResult != null &&
-        vaultProtectionResult != SetProtectionOutcome.Success &&
-        !dismissedResult
-    if (showResultError) {
-        AlertDialog(
-            onDismissRequest = { dismissedResult = true },
-            title = { Text("Couldn't change vault protection") },
-            text = { Text(vaultProtectionErrorText(vaultProtectionResult!!)) },
-            confirmButton = {
-                TextButton(onClick = { dismissedResult = true }) { Text("OK") }
-            },
-        )
     }
 }
 
@@ -1002,5 +961,129 @@ fun SettingRow(
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
+    }
+}
+
+private sealed interface VaultChooserKind {
+    data object AutoLock : VaultChooserKind
+    data object Protection : VaultChooserKind
+}
+
+/**
+ * Consolidated vault landing page. Hosts the three formerly-separate Settings
+ * entries (saved credentials, protection mode, auto-lock) so security-relevant
+ * controls live together under a single "Vault" item in Settings.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun VaultSettingsScreen(
+    appSettings: AppSettings,
+    deviceKeySupported: Boolean?,
+    vaultProtectionResult: SetProtectionOutcome?,
+    onVaultProtectionChange: (VaultProtection, CharArray?) -> Unit,
+    onAutoLockVaultMinutes: (Int) -> Unit,
+    onOpenCredentials: () -> Unit,
+    onBack: () -> Unit,
+) {
+    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
+    var chooser by remember { mutableStateOf<VaultChooserKind?>(null) }
+
+    Scaffold(
+        topBar = {
+            LargeTopAppBar(
+                title = { Text("Vault") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                scrollBehavior = scrollBehavior,
+            )
+        },
+        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .verticalScroll(rememberScrollState()),
+        ) {
+            SectionHeader("Credentials")
+            SettingRow(
+                icon = Icons.Default.Lock,
+                title = "Saved credentials",
+                subtitle = "View and manage stored passwords",
+                onClick = onOpenCredentials,
+            )
+
+            SectionHeader("Security")
+            SettingRow(
+                icon = Icons.Default.Lock,
+                title = "Vault protection",
+                subtitle = vaultProtectionSubtitle(appSettings.vaultProtection, deviceKeySupported),
+                value = vaultProtectionLabel(appSettings.vaultProtection),
+                onClick = { chooser = VaultChooserKind.Protection },
+            )
+            SettingRow(
+                icon = Icons.Default.Lock,
+                title = "Auto-lock vault",
+                value = AutoLockVault.label(appSettings.autoLockVaultMinutes),
+                onClick = { chooser = VaultChooserKind.AutoLock },
+            )
+
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+
+    val activeChooser = chooser
+    if (activeChooser != null) {
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        val scope = rememberCoroutineScope()
+        fun dismiss() {
+            scope.launch {
+                sheetState.hide()
+                chooser = null
+            }
+        }
+        ModalBottomSheet(
+            onDismissRequest = { chooser = null },
+            sheetState = sheetState,
+        ) {
+            when (activeChooser) {
+                VaultChooserKind.AutoLock -> ChooserList(
+                    title = "Auto-lock vault",
+                    options = AutoLockVault.OPTIONS.map { AutoLockVault.label(it) },
+                    selected = AutoLockVault.label(appSettings.autoLockVaultMinutes),
+                    onSelect = { label ->
+                        val value = AutoLockVault.OPTIONS.first { AutoLockVault.label(it) == label }
+                        onAutoLockVaultMinutes(value)
+                        dismiss()
+                    },
+                )
+                VaultChooserKind.Protection -> VaultProtectionChooser(
+                    current = appSettings.vaultProtection,
+                    deviceKeySupported = deviceKeySupported,
+                    onSelect = { target, password ->
+                        onVaultProtectionChange(target, password)
+                        dismiss()
+                    },
+                )
+            }
+        }
+    }
+
+    var dismissedResult by remember(vaultProtectionResult) { mutableStateOf(false) }
+    val showResultError = vaultProtectionResult != null &&
+        vaultProtectionResult != SetProtectionOutcome.Success &&
+        !dismissedResult
+    if (showResultError) {
+        AlertDialog(
+            onDismissRequest = { dismissedResult = true },
+            title = { Text("Couldn't change vault protection") },
+            text = { Text(vaultProtectionErrorText(vaultProtectionResult!!)) },
+            confirmButton = {
+                TextButton(onClick = { dismissedResult = true }) { Text("OK") }
+            },
+        )
     }
 }

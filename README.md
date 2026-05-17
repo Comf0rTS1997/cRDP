@@ -11,9 +11,7 @@ Built on FreeRDP, designed for touch-first use, and ready for big screens.
 
 > ⚠️ **Work in progress.** cRDP is still work in progress - features may
 > change, break, or disappear between builds, and rough edges are expected.
-> This project is also **heavily vibe-coded**: a lot of it was written with
-> AI assistants (Claude, Cursor) in the loop. Treat it as an enthusiastic
-> hobby project, not a polished commercial product.
+> Treat it as an enthusiastic hobby project, not a polished commercial product.
 
 > Looking for build instructions, module layout, or engine internals?
 > See the **[Technical Wiki](docs/TECHNICAL.md)**.

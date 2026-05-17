@@ -61,6 +61,12 @@ data class DirectConnectionProfile(
      * only producer.
      */
     val keyboardLayoutId: Int = 0,
+    /**
+     * App-wide hint copied in at connect time (see SessionViewModel.applyEffectiveNetwork).
+     * True → engine uses `/network:auto` so the server can throttle on low-bandwidth
+     * links; false → fixed `/network:lan` baseline (legacy behavior).
+     */
+    val networkAutoDetect: Boolean = true,
 ) : ConnectionProfile()
 
 @Serializable

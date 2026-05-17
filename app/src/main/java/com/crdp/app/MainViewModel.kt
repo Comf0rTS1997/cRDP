@@ -162,6 +162,14 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch { userPreferencesRepository.setDefaultPrinterShare(value) }
     }
 
+    fun setNetworkAutoDetect(value: Boolean) {
+        viewModelScope.launch { userPreferencesRepository.setNetworkAutoDetect(value) }
+    }
+
+    fun setShowCaptureHint(value: Boolean) {
+        viewModelScope.launch { userPreferencesRepository.setShowCaptureHint(value) }
+    }
+
     /**
      * Asynchronously probes whether the device can actually host an
      * auth-bound Keystore key. Off the main thread because the probe does a

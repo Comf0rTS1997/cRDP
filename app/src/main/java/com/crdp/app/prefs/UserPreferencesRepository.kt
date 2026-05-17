@@ -65,6 +65,19 @@ data class AppSettings(
     val defaultClipboardSync: Boolean = true,
     /** Default: expose a virtual printer for sessions that do not override. */
     val defaultPrinterShare: Boolean = false,
+    /**
+     * Enable RDP NetworkAutoDetect (bandwidth/RTT probes) at connect time.
+     * Drives the `/network:auto` vs `/network:lan` argv choice in the engine.
+     * Default true: adaptive-GFX-capable servers throttle quality on low
+     * bandwidth; others ignore the probes harmlessly.
+     */
+    val networkAutoDetect: Boolean = true,
+    /**
+     * Show the "Pointer captured. Double-tap Esc to release." snackbar each
+     * time hardware pointer capture engages. Disable once the user knows the
+     * gesture and finds the reminder noisy.
+     */
+    val showCaptureHint: Boolean = true,
     /** Name advertised to the remote session for the redirected printer. */
     val printerShareName: String = "cRDP",
     /**
@@ -240,6 +253,8 @@ class UserPreferencesRepository @Inject constructor(
     private val cameraEncodeKey = booleanPreferencesKey("camera_encode_h264")
     private val defaultClipboardSyncKey = booleanPreferencesKey("default_clipboard_sync")
     private val defaultPrinterShareKey = booleanPreferencesKey("default_printer_share")
+    private val networkAutoDetectKey = booleanPreferencesKey("network_auto_detect")
+    private val showCaptureHintKey = booleanPreferencesKey("show_capture_hint")
     private val printerShareNameKey = stringPreferencesKey("printer_share_name")
     /** Legacy boolean toggle. Read on first launch and migrated to [vaultProtectionKey]. */
     private val vaultEncryptionKey = booleanPreferencesKey("vault_encryption")
@@ -279,6 +294,8 @@ class UserPreferencesRepository @Inject constructor(
             cameraEncode = prefs[cameraEncodeKey] ?: true,
             defaultClipboardSync = prefs[defaultClipboardSyncKey] ?: true,
             defaultPrinterShare = prefs[defaultPrinterShareKey] ?: false,
+            networkAutoDetect = prefs[networkAutoDetectKey] ?: true,
+            showCaptureHint = prefs[showCaptureHintKey] ?: true,
             printerShareName = prefs[printerShareNameKey]?.takeIf { it.isNotBlank() } ?: "cRDP",
             vaultProtection = run {
                 val raw = prefs[vaultProtectionKey]
@@ -408,6 +425,14 @@ class UserPreferencesRepository @Inject constructor(
 
     suspend fun setDefaultPrinterShare(value: Boolean) {
         context.userPrefs.edit { it[defaultPrinterShareKey] = value }
+    }
+
+    suspend fun setNetworkAutoDetect(value: Boolean) {
+        context.userPrefs.edit { it[networkAutoDetectKey] = value }
+    }
+
+    suspend fun setShowCaptureHint(value: Boolean) {
+        context.userPrefs.edit { it[showCaptureHintKey] = value }
     }
 
     /** Trims and falls back to "cRDP" if empty so the server never sees a blank label. */

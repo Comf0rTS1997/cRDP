@@ -120,6 +120,7 @@ class DirectRdpSession @Inject constructor(
                 printerShareEnabled = profile.printerShareOverride ?: false,
                 keyboardLayoutId = profile.keyboardLayoutId,
                 autoResolution = profile.autoResolution,
+                networkAutoDetect = profile.networkAutoDetect,
             ),
         )
     }

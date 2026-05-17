@@ -163,6 +163,11 @@ class SessionViewModel @Inject constructor(
     // connect via the same wait-for-hint pattern as audio/clipboard.
     private val _keyboardLayoutHint = MutableStateFlow<Int?>(null)
 
+    // App-default network auto-detect toggle. Negotiated at connect time (it
+    // controls the /network: arg), so we use the same wait-for-hint pattern as
+    // clipboard/printer.
+    private val _networkAutoDetectHint = MutableStateFlow<Boolean?>(null)
+
     private fun activatePort(port: RdpSessionPort) {
         activePort = port
         challengeForwardJob?.cancel()
@@ -198,6 +203,7 @@ class SessionViewModel @Inject constructor(
             _clipboardDefaultsHint.filter { it != null }.first()
             _printerShareHint.filter { it != null }.first()
             _keyboardLayoutHint.filter { it != null }.first()
+            _networkAutoDetectHint.filter { it != null }.first()
             val isAuto = when (profile) {
                 is DirectConnectionProfile -> profile.autoResolution
                 is GatewayConnectionProfile -> profile.autoResolution
@@ -213,12 +219,12 @@ class SessionViewModel @Inject constructor(
                 if (w > 0 && h > 0) {
                     autoProfile = null
                     autoPort = null
-                    val resolved = applyEffectiveKeyboard(applyEffectivePrinter(applyEffectiveClipboard(applyEffectiveCamera(applyEffectiveAudio(applyEffectiveScale(
+                    val resolved = applyEffectiveNetwork(applyEffectiveKeyboard(applyEffectivePrinter(applyEffectiveClipboard(applyEffectiveCamera(applyEffectiveAudio(applyEffectiveScale(
                         when (profile) {
                             is DirectConnectionProfile -> profile.copy(width = w, height = h)
                             is GatewayConnectionProfile -> profile.copy(width = w, height = h)
                         },
-                    ))))))
+                    )))))))
                     port.connect(resolved).onFailure { e ->
                         _loadError.value = e.message ?: "Connection failed"
                     }.onSuccess {
@@ -229,7 +235,7 @@ class SessionViewModel @Inject constructor(
             } else {
                 val port = sessionFactory.portFor(profile)
                 activatePort(port)
-                val resolved = applyEffectiveKeyboard(applyEffectivePrinter(applyEffectiveClipboard(applyEffectiveCamera(applyEffectiveAudio(applyEffectiveScale(profile))))))
+                val resolved = applyEffectiveNetwork(applyEffectiveKeyboard(applyEffectivePrinter(applyEffectiveClipboard(applyEffectiveCamera(applyEffectiveAudio(applyEffectiveScale(profile)))))))
                 port.connect(resolved).onFailure { e ->
                     _loadError.value = e.message ?: "Connection failed"
                 }.onSuccess {
@@ -364,6 +370,18 @@ class SessionViewModel @Inject constructor(
         _printerShareHint.value = enabled
     }
 
+    private fun applyEffectiveNetwork(profile: ConnectionProfile): ConnectionProfile {
+        val enabled = _networkAutoDetectHint.value ?: true
+        return when (profile) {
+            is DirectConnectionProfile -> profile.copy(networkAutoDetect = enabled)
+            is GatewayConnectionProfile -> profile
+        }
+    }
+
+    fun setNetworkAutoDetectHint(enabled: Boolean) {
+        _networkAutoDetectHint.value = enabled
+    }
+
     /**
      * Stamp the connect-time keyboard layout id onto the profile. Profiles
      * stored with the default 0 inherit the app-level layout the UI has just
@@ -488,12 +506,12 @@ class SessionViewModel @Inject constructor(
         autoPort = null
         // activatePort already called when port was created; no need to call again.
         viewModelScope.launch {
-            val resolved = applyEffectiveKeyboard(applyEffectivePrinter(applyEffectiveClipboard(applyEffectiveCamera(applyEffectiveAudio(applyEffectiveScale(
+            val resolved = applyEffectiveNetwork(applyEffectiveKeyboard(applyEffectivePrinter(applyEffectiveClipboard(applyEffectiveCamera(applyEffectiveAudio(applyEffectiveScale(
                 when (profile) {
                     is DirectConnectionProfile -> profile.copy(width = w, height = h)
                     is GatewayConnectionProfile -> profile.copy(width = w, height = h)
                 },
-            ))))))
+            )))))))
             port.connect(resolved).onFailure { e ->
                 _loadError.value = e.message ?: "Connection failed"
             }.onSuccess {
@@ -514,7 +532,7 @@ class SessionViewModel @Inject constructor(
                 is DirectConnectionProfile -> profile.copy(width = w, height = h)
                 is GatewayConnectionProfile -> profile.copy(width = w, height = h)
             }
-            val resolved = applyEffectiveKeyboard(applyEffectivePrinter(applyEffectiveClipboard(applyEffectiveCamera(applyEffectiveAudio(
+            val resolved = applyEffectiveNetwork(applyEffectiveKeyboard(applyEffectivePrinter(applyEffectiveClipboard(applyEffectiveCamera(applyEffectiveAudio(
                 if (overrideScale != null) {
                     when (resized) {
                         is DirectConnectionProfile -> resized.copy(desktopScaleFactor = overrideScale)
@@ -523,7 +541,7 @@ class SessionViewModel @Inject constructor(
                 } else {
                     applyEffectiveScale(resized)
                 }
-            )))))
+            ))))))
             val port = sessionFactory.portFor(resolved)
             activatePort(port)
             port.connect(resolved).onFailure { e ->

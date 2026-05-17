@@ -335,22 +335,6 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                     }
                 }
 
-                fun saveAndConnectWithBiometric(profileId: String) {
-                    coroutineScope.launch {
-                        if (unlockVaultForProfile(
-                                mainViewModel, context, profileId,
-                                appSettings.vaultProtection,
-                                notifyPromptOnPhone = expandedWindow,
-                                requestPassword = requestPassword,
-                            )
-                        ) {
-                            navController.navigate("session/${Uri.encode(profileId)}") {
-                                popUpTo("connections")
-                            }
-                        }
-                    }
-                }
-
                 val activePasswordRequest = pendingPasswordRequest
                 if (activePasswordRequest != null) {
                     ConnectVaultPasswordDialog(
@@ -442,8 +426,6 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                                 ) + fadeOut(animationSpec = tween(durationMillis = 300))
                             },
                         ) {
-                            val deviceKeySupported by mainViewModel.deviceKeySupported.collectAsStateWithLifecycle()
-                            val vaultProtectionResult by mainViewModel.vaultProtectionResult.collectAsStateWithLifecycle()
                             SettingsScreen(
                                 dynamicColor = dynamicColor,
                                 onDynamicColor = mainViewModel::setDynamicColor,
@@ -452,15 +434,9 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                                 onHapticFeedback = mainViewModel::setHapticFeedback,
                                 onOpenKeyboardRow = { navController.navigate("settings/keyboard-row") },
                                 onOpenMouseSettings = { navController.navigate("settings/mouse") },
-                                onVaultProtectionChange = { target, pw ->
-                                    mainViewModel.requestVaultProtection(target, pw)
-                                },
-                                vaultProtectionResult = vaultProtectionResult,
-                                deviceKeySupported = deviceKeySupported,
                                 onAutoDisconnectIdle = mainViewModel::setAutoDisconnectIdle,
                                 onDefaultResolution = mainViewModel::setDefaultResolution,
                                 onKeyboardLayout = mainViewModel::setKeyboardLayout,
-                                onAutoLockVaultMinutes = mainViewModel::setAutoLockVaultMinutes,
                                 onRenderBackend = mainViewModel::setRenderBackend,
                                 onRenderSampling = mainViewModel::setRenderSampling,
                                 onAddCustomResolution = mainViewModel::addCustomResolution,
@@ -473,6 +449,8 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                                 onDefaultCameraMode = mainViewModel::setDefaultCameraMode,
                                 onDefaultClipboardSync = mainViewModel::setDefaultClipboardSync,
                                 onDefaultPrinterShare = mainViewModel::setDefaultPrinterShare,
+                                onNetworkAutoDetect = mainViewModel::setNetworkAutoDetect,
+                                onShowCaptureHint = mainViewModel::setShowCaptureHint,
                                 onOpenVault = { navController.navigate("settings/vault") },
                                 onOpenAbout = { navController.navigate("settings/about") },
                                 onBack = { navController.popBackStack() },
@@ -524,6 +502,27 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                             popEnterTransition = { EnterTransition.None },
                             popExitTransition = { ExitTransition.None },
                         ) {
+                            val deviceKeySupported by mainViewModel.deviceKeySupported.collectAsStateWithLifecycle()
+                            val vaultProtectionResult by mainViewModel.vaultProtectionResult.collectAsStateWithLifecycle()
+                            VaultSettingsScreen(
+                                appSettings = appSettings,
+                                deviceKeySupported = deviceKeySupported,
+                                vaultProtectionResult = vaultProtectionResult,
+                                onVaultProtectionChange = { target, pw ->
+                                    mainViewModel.requestVaultProtection(target, pw)
+                                },
+                                onAutoLockVaultMinutes = mainViewModel::setAutoLockVaultMinutes,
+                                onOpenCredentials = { navController.navigate("settings/vault/credentials") },
+                                onBack = { navController.popBackStack() },
+                            )
+                        }
+                        composable(
+                            route = "settings/vault/credentials",
+                            enterTransition = { EnterTransition.None },
+                            exitTransition = { ExitTransition.None },
+                            popEnterTransition = { EnterTransition.None },
+                            popExitTransition = { ExitTransition.None },
+                        ) {
                             VaultGate(appSettings = appSettings, mainViewModel = mainViewModel) {
                                 VaultRoute(onBack = { navController.popBackStack() })
                             }
@@ -557,7 +556,6 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                                 viewModel = vm,
                                 onBack = { navController.popBackStack() },
                                 onSaved = { navController.popBackStack() },
-                                onSaveAndConnect = ::saveAndConnectWithBiometric,
                                 newProfileDefaults = resolveNewProfileDefaults(appSettings.defaultResolution),
                             )
                         }
@@ -612,6 +610,8 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                                     defaultPrinterShare = appSettings.defaultPrinterShare,
                                     keyboardLayoutId = KeyboardLayouts.layoutId(appSettings.keyboardLayout),
                                     auxKeyRowKeys = appSettings.auxKeyRowKeys,
+                                    networkAutoDetect = appSettings.networkAutoDetect,
+                                    showCaptureHint = appSettings.showCaptureHint,
                                 ),
                             )
                         }

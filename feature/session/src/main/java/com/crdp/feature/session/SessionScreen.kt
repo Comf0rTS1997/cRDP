@@ -35,18 +35,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Keyboard
-import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.Monitor
 import androidx.compose.material.icons.filled.Mouse
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material3.Button
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -138,6 +133,9 @@ data class RdpTransform(val scale: Float, val offsetX: Float, val offsetY: Float
         (sx - offsetX) / scale to (sy - offsetY) / scale
 }
 
+/** Maximum gap between two Esc-downs to count as a "release capture" double-tap. */
+private const val ESC_DOUBLE_TAP_MS: Long = 400L
+
 fun computeRdpTransform(sw: Int, sh: Int, rw: Int, rh: Int): RdpTransform {
     if (sw == 0 || sh == 0 || rw == 0 || rh == 0) return RdpTransform(1f, 0f, 0f)
     val scale = minOf(sw.toFloat() / rw, sh.toFloat() / rh)
@@ -186,6 +184,10 @@ data class SessionUserSettings(
     val keyboardLayoutId: Int = 0,
     /** Ids of [AuxKeys] entries shown in the row attached above the soft keyboard. */
     val auxKeyRowKeys: Set<String> = AuxKeys.DEFAULT_ENABLED,
+    /** App-wide toggle for `/network:auto` NetworkAutoDetect at connect time. */
+    val networkAutoDetect: Boolean = true,
+    /** Show the "Pointer captured — double-tap Esc to release" snackbar on capture engage. */
+    val showCaptureHint: Boolean = true,
 )
 
 @Composable
@@ -333,6 +335,10 @@ fun SessionRoute(
         viewModel.setKeyboardLayoutHint(settings.keyboardLayoutId)
     }
 
+    LaunchedEffect(settings.networkAutoDetect) {
+        viewModel.setNetworkAutoDetectHint(settings.networkAutoDetect)
+    }
+
     // Mic is a runtime-prompt permission. Only request when the resolved decision
     // for this session needs it; otherwise stay silent.
     val ctx = LocalContext.current
@@ -467,7 +473,6 @@ private fun SessionScreen(
     var dockPos by remember { mutableStateOf(Offset(-1f, -1f)) }
     val isEdgeExpandedState = remember { mutableStateOf(false) }
     var isEdgeExpanded by isEdgeExpandedState
-    var dockMenuOpen by remember { mutableStateOf(false) }
     // Dock layout bounds kept in sync via SideEffect; read from the pointerInput coroutine
     // to exclude dock-area touches from RDP input processing.
     val dockBoundsRef = remember { mutableStateOf<Rect?>(null) }
@@ -738,7 +743,17 @@ private fun SessionScreen(
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return@LaunchedEffect
         repeat(8) {
             val surf = rdpSurfaceRef.value ?: return@repeat
-            if (surf.hasPointerCapture()) return@LaunchedEffect
+            if (surf.hasPointerCapture()) {
+                // Inform the user of the release gesture each time capture
+                // engages — silenced by the "Pointer-capture hint" setting once
+                // they've internalized the gesture.
+                if (settings.showCaptureHint) {
+                    snackbarHostState.showSnackbar(
+                        "Pointer captured. Double-tap Esc to release. (Disable in Settings → Input.)",
+                    )
+                }
+                return@LaunchedEffect
+            }
             surf.captureOnFocus = true
             surf.requestFocus()
             runCatching { surf.requestPointerCapture() }
@@ -786,10 +801,12 @@ private fun SessionScreen(
     // and from Compose's onPreviewKeyEvent (a fallback in case the activity is
     // not the bundled MainActivity, e.g., embedded host).
     //
-    // Special case: ESC while pointer capture is active releases capture and is
-    // NOT forwarded to the server, giving the user a way out of the captured
-    // session without a hardware Back/Home (which Android disallows intercepting).
-    val escConsumedRef = remember { mutableStateOf(false) }
+    // Pointer-capture escape-hatch: a DOUBLE-TAP of Esc (two presses within
+    // ESC_DOUBLE_TAP_MS) releases capture. A single Esc is still forwarded to
+    // the server, so applications inside the session (vim, dialogs, games) keep
+    // a working Escape key while capture is engaged. The second tap is also
+    // forwarded — only the capture release is added on top.
+    val lastEscDownAtRef = remember { mutableStateOf(0L) }
     fun handleSessionKeyEvent(native: AndroidKeyEvent): Boolean {
         if (!sessionConnected) return false
         val action = when (native.action) {
@@ -797,17 +814,22 @@ private fun SessionScreen(
             AndroidKeyEvent.ACTION_UP -> KeyAction.Up
             else -> return false
         }
-        // ESC escape-hatch: release capture and swallow both edges of the keystroke
-        // so the remote desktop doesn't see a stray Escape.
         val rdpSurface = rdpSurfaceRef.value
         val captureActive = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
             (rdpSurface?.hasPointerCapture() == true || view.hasPointerCapture())
         if (native.keyCode == AndroidKeyEvent.KEYCODE_ESCAPE &&
-            (captureActive || escConsumedRef.value)
+            action == KeyAction.Down &&
+            captureActive
         ) {
-            if (action == KeyAction.Down) {
-                escConsumedRef.value = true
-                // Stop the SurfaceView from immediately re-grabbing capture on focus.
+            val now = System.currentTimeMillis()
+            val prev = lastEscDownAtRef.value
+            // Android emits repeated KEY_DOWNs while the key is physically held;
+            // require the previous press to be a separate keystroke (>50ms gap)
+            // so a held Esc doesn't accidentally release capture.
+            val isDoubleTap = prev != 0L && (now - prev) in 50..ESC_DOUBLE_TAP_MS
+            lastEscDownAtRef.value = now
+            if (isDoubleTap) {
+                lastEscDownAtRef.value = 0L
                 rdpSurface?.captureOnFocus = false
                 runCatching { rdpSurface?.releasePointerCapture() }
                 runCatching { view.releasePointerCapture() }
@@ -816,10 +838,8 @@ private fun SessionScreen(
                         "Pointer released. Tap the surface to recapture.",
                     )
                 }
-            } else if (action == KeyAction.Up) {
-                escConsumedRef.value = false
+                // Fall through so the second Esc still reaches the server.
             }
-            return true
         }
         if (action == KeyAction.Down) {
             haptic(HapticFeedbackConstants.KEYBOARD_TAP)
@@ -1580,12 +1600,18 @@ private fun SessionScreen(
         // the dock-exclusion rect doesn't over-cover empty space next to the dock.
         val hasKeyboardButton = inputMode == InputMode.Trackpad
         val collapsedDockWPx = with(density) { 64.dp.toPx() }
+        // Button inventory:
+        //  - 1 edge chevron (only when edge-expanded; not when free-floating)
+        //  - optional keyboard button (Trackpad mode only)
+        //  - input-mode toggle
+        //  - fullscreen toggle
+        //  - disconnect
         val edgeExpandedDockWPx = with(density) {
-            val buttons = if (hasKeyboardButton) 4 else 3
+            val buttons = if (hasKeyboardButton) 5 else 4
             (16 + buttons * 48).dp.toPx()
         }
         val freeDockWPx = with(density) {
-            val buttons = if (hasKeyboardButton) 3 else 2
+            val buttons = if (hasKeyboardButton) 4 else 3
             (16 + buttons * 48).dp.toPx()
         }
         val dockHPx = with(density) { 60.dp.toPx() }
@@ -1858,53 +1884,23 @@ private fun SessionScreen(
                                     scope.launch { snackbarHostState.showSnackbar(label) }
                                 },
                             )
-                            Box {
-                                DockButton(
-                                    icon = Icons.Default.Menu,
-                                    onClick = { dockMenuOpen = true },
-                                )
-                                DropdownMenu(
-                                    expanded = dockMenuOpen,
-                                    onDismissRequest = { dockMenuOpen = false },
-                                ) {
-                                DropdownMenuItem(
-                                    text = { Text(if (isFullscreen) "Exit fullscreen" else "Fullscreen") },
-                                    leadingIcon = {
-                                        Icon(
-                                            if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
-                                            contentDescription = null,
-                                        )
-                                    },
-                                    onClick = {
-                                        dockMenuOpen = false
-                                        isFullscreen = !isFullscreen
-                                    },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Resolution") },
-                                    leadingIcon = { Icon(Icons.Default.Monitor, contentDescription = null) },
-                                    onClick = {
-                                        dockMenuOpen = false
-                                        scope.launch {
-                                            snackbarHostState.showSnackbar(
-                                                "${profileWidth(profile)}×${profileHeight(profile)}",
-                                            )
-                                        }
-                                    },
-                                )
-                                HorizontalDivider()
-                                    DropdownMenuItem(
-                                        text = { Text("Disconnect", color = DisconnectRed) },
-                                        leadingIcon = {
-                                            Icon(Icons.Default.Close, contentDescription = null, tint = DisconnectRed)
-                                        },
-                                        onClick = {
-                                            dockMenuOpen = false
-                                            onBack()
-                                        },
-                                    )
-                                }
-                            }
+                            // Fullscreen toggle promoted from the overflow menu —
+                            // a tap reaches the action with no extra hop.
+                            DockButton(
+                                icon = if (isFullscreen) {
+                                    Icons.Default.FullscreenExit
+                                } else {
+                                    Icons.Default.Fullscreen
+                                },
+                                onClick = { isFullscreen = !isFullscreen },
+                            )
+                            // Disconnect promoted too; power icon + red tint so
+                            // the destructive end-session action reads at a glance.
+                            DockButton(
+                                icon = Icons.Default.PowerSettingsNew,
+                                tint = DisconnectRed,
+                                onClick = onBack,
+                            )
                             // Trailing chevron when on left edge: collapses back to the edge.
                             if (isOnEdge && isOnLeftEdge) {
                                 DockButton(
@@ -2065,9 +2061,9 @@ private fun SessionScreen(
 }
 
 @Composable
-private fun DockButton(icon: ImageVector, onClick: () -> Unit) {
+private fun DockButton(icon: ImageVector, onClick: () -> Unit, tint: Color = Color.White) {
     IconButton(onClick = onClick, modifier = Modifier.size(48.dp)) {
-        Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(24.dp))
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(24.dp))
     }
 }
 

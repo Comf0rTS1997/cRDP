@@ -723,7 +723,13 @@ class AFreeRdpEngine @Inject constructor(
             args += "/scale-device:$deviceScale"
         }
         args += "/gdi:hw"
-        args += "/network:lan"
+        // /network:auto enables NetworkAutoDetect (MS-RDPBCGR §2.2.14 — RTT and
+        // bandwidth probes round-trip with the server) on top of a LAN baseline.
+        // Servers with adaptive GFX (Win8+/Server 2012+) throttle H.264 quality
+        // on low-bandwidth links; servers without it ignore the probes. The
+        // fixed /network:lan path is kept as an escape hatch for rare cases
+        // where the autodetect handshake misbehaves.
+        args += if (p.networkAutoDetect) "/network:auto" else "/network:lan"
         // Enable MS-RDPEGFX with H.264 AVC444 when the bundled FreeRDP was built
         // with libavcodec (true on arm64/armv7 builds — see jniLibs/libavcodec.so).
         // Without this the server falls back to per-bitmap-rect updates, which is

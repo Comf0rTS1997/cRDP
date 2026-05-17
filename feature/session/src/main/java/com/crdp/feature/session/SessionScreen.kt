@@ -8,12 +8,14 @@ import android.view.SurfaceView
 import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.KeyEvent as AndroidKeyEvent
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -1506,12 +1508,56 @@ private fun SessionScreen(
         val screenWPx = constraints.maxWidth.toFloat()
         val screenHPx = constraints.maxHeight.toFloat()
 
+        // ── Keyboard-follow pan ───────────────────────────────────────
+        // When the soft keyboard rises in Trackpad mode, the bottom of the
+        // RDP image disappears under it — including the virtual cursor if
+        // it happened to be down there. Shift the surface (and the cursor
+        // overlay) up by just enough that the cursor stays visible above
+        // the keyboard (and above the aux row that sits on top of it).
+        //
+        // DirectTouch never pans: the keyboard button is hidden in that
+        // mode, and the input model would break if absolute touches no
+        // longer matched the rendered surface position.
+        val imeBottomPx = WindowInsets.ime.getBottom(density)
+        val cursorMarginPx = with(density) { 24.dp.toPx() }
+        val rawCursorScreenY = cursorY * transform.scale + transform.offsetY
+        val visibleBottomPx = auxRowBoundsRef.value?.top ?: (screenHPx - imeBottomPx)
+        val targetPanY = if (inputMode == InputMode.Trackpad && imeBottomPx > 0) {
+            (rawCursorScreenY + cursorMarginPx - visibleBottomPx).coerceAtLeast(0f)
+        } else 0f
+        val keyboardPanY by animateFloatAsState(
+            targetValue = targetPanY,
+            label = "keyboardPanY",
+        )
+
+        // Switching into DirectTouch with the keyboard up would leave the
+        // user with a covered bottom half and no pan to compensate. Drop
+        // the IME so the surface returns to a clean state.
+        LaunchedEffect(inputMode) {
+            if (inputMode == InputMode.DirectTouch) {
+                val edit = imeEditTextRef.value
+                if (edit != null) {
+                    val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                    imm.hideSoftInputFromWindow(edit.windowToken, 0)
+                }
+            }
+        }
+
         // Dock sizing: collapsed = 1 chevron (48dp) + 8dp padding×2 = 64dp
-        //              edge-expanded = chevron + Keyboard + Mouse + Menu (4×48=192) + padding = 208dp
-        //              free-floating = Keyboard + Mouse + Menu (144) + padding = 160dp
+        //              edge-expanded = chevron + [Keyboard?] + Mouse + Menu + padding
+        //              free-floating = [Keyboard?] + Mouse + Menu + padding
+        // The Keyboard button is hidden in DirectTouch mode; shrink the bounds so
+        // the dock-exclusion rect doesn't over-cover empty space next to the dock.
+        val hasKeyboardButton = inputMode == InputMode.Trackpad
         val collapsedDockWPx = with(density) { 64.dp.toPx() }
-        val edgeExpandedDockWPx = with(density) { 208.dp.toPx() }
-        val freeDockWPx = with(density) { 160.dp.toPx() }
+        val edgeExpandedDockWPx = with(density) {
+            val buttons = if (hasKeyboardButton) 4 else 3
+            (16 + buttons * 48).dp.toPx()
+        }
+        val freeDockWPx = with(density) {
+            val buttons = if (hasKeyboardButton) 3 else 2
+            (16 + buttons * 48).dp.toPx()
+        }
         val dockHPx = with(density) { 60.dp.toPx() }
 
         // Initialise position: right edge, upper 1/3 of screen.
@@ -1657,7 +1703,11 @@ private fun SessionScreen(
                     }
                 }
             },
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                // Visual-only translation when the keyboard is up; the SurfaceView
+                // keeps its full layout size so FreeRDP's render target is unchanged.
+                .absoluteOffset { IntOffset(0, -keyboardPanY.roundToInt()) },
         )
 
         // Cursor overlay for trackpad mode: prefer the server bitmap, fall back to
@@ -1666,7 +1716,9 @@ private fun SessionScreen(
             TrackpadCursor(
                 cursor = cursorFrame,
                 cx = cursorX * transform.scale + transform.offsetX,
-                cy = cursorY * transform.scale + transform.offsetY,
+                // Cursor sits on top of the same surface, so apply the
+                // same vertical shift the keyboard-follow pan applies above.
+                cy = cursorY * transform.scale + transform.offsetY - keyboardPanY,
             )
         }
 
@@ -1734,15 +1786,28 @@ private fun SessionScreen(
                                     onClick = { isEdgeExpanded = false },
                                 )
                             }
-                            DockButton(
-                                icon = Icons.Default.Keyboard,
-                                onClick = {
-                                    val editText = imeEditTextRef.value ?: return@DockButton
-                                    editText.requestFocus()
-                                    val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-                                    imm.showSoftInput(editText, InputMethodManager.SHOW_FORCED)
-                                },
-                            )
+                            // Soft keyboard is only useful in Trackpad mode — typing
+                                // in DirectTouch would also fight with the touch-event
+                                // pass-through, and there's no pan to keep the surface
+                                // visible under the IME. Hide the button there.
+                            if (inputMode == InputMode.Trackpad) {
+                                DockButton(
+                                    icon = Icons.Default.Keyboard,
+                                    onClick = {
+                                        val editText = imeEditTextRef.value ?: return@DockButton
+                                        val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                                        // Toggle: if the IME is already up, tapping the
+                                        // button again should dismiss it. imeBottomPx is
+                                        // the live IME inset computed in the parent scope.
+                                        if (imeBottomPx > 0) {
+                                            imm.hideSoftInputFromWindow(editText.windowToken, 0)
+                                        } else {
+                                            editText.requestFocus()
+                                            imm.showSoftInput(editText, InputMethodManager.SHOW_FORCED)
+                                        }
+                                    },
+                                )
+                            }
                             DockButton(
                                 // Show the icon matching the CURRENT mode so the dock
                                 // always tells the user which input scheme is live —

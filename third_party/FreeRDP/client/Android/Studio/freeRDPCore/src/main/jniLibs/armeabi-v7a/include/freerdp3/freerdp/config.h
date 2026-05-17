@@ -27,7 +27,7 @@
 /* #undef WITH_CUPS */
 /* #undef WITH_JPEG */
 /* #undef WITH_WIN8 */
-/* #undef WITH_AAD */
+#define WITH_AAD
 /* #undef WITH_CAIRO */
 #define WITH_SWSCALE
 /* #undef WITH_RDPSND_DSOUND */
@@ -120,8 +120,8 @@
 /* #undef CHANNEL_PARALLEL */
 /* #undef CHANNEL_PARALLEL_CLIENT */
 /* #undef CHANNEL_PARALLEL_SERVER */
-/* #undef CHANNEL_PRINTER */
-/* #undef CHANNEL_PRINTER_CLIENT */
+#define CHANNEL_PRINTER
+#define CHANNEL_PRINTER_CLIENT
 /* #undef CHANNEL_PRINTER_SERVER */
 #define CHANNEL_RAIL
 #define CHANNEL_RAIL_CLIENT

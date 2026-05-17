@@ -33,3 +33,9 @@ endif()
 if(WIN32 AND NOT UWP)
 	add_channel_client_subsystem(${MODULE_PREFIX} ${CHANNEL_NAME} "win" "")
 endif()
+
+# cRDP: file-spool subsystem used when building for Android. Becomes the
+# default backend (see printer_main.c) when neither CUPS nor _WIN32 is in play.
+if(ANDROID)
+	add_channel_client_subsystem(${MODULE_PREFIX} ${CHANNEL_NAME} "android" "")
+endif()

@@ -89,6 +89,10 @@ class AFreeRdpEngine @Inject constructor(
     @Volatile private var ignoreNextLocalClip: Boolean = false
     @Volatile private var lastTextSentToRemote: String? = null
 
+    // Resolved at connect() from params.printerShareEnabled AND the native
+    // capability probe. buildArgs() reads this to decide whether to emit /printer.
+    @Volatile private var printerArgEnabledForSession: Boolean = false
+
     private var clipListener: ClipboardManager.OnPrimaryClipChangedListener? = null
 
     private val clipDebounceRunnable = Runnable {
@@ -131,6 +135,45 @@ class AFreeRdpEngine @Inject constructor(
         hasBeenConnected = false
         _cursor.value = null
         _state.value = EngineState.Connecting
+
+        // Configure the native printer backend ONLY when libfreerdp-client3.so was
+        // rebuilt with CHANNEL_PRINTER_CLIENT=ON. Without that rebuild the JNI
+        // symbols don't exist and — worse — FreeRDP's rdpdr would try to dlopen
+        // libprinter-client.so and kill the session if /printer is in argv.
+        // See PrinterRedirectBridge.isNativeAvailable for the rationale.
+        printerArgEnabledForSession = params.printerShareEnabled &&
+            PrinterRedirectBridge.isNativeAvailable
+        android.util.Log.i(
+            TAG,
+            "printer-share decision: paramsEnabled=${params.printerShareEnabled} " +
+                "nativeAvail=${PrinterRedirectBridge.isNativeAvailable} " +
+                "→ printerArgEnabledForSession=$printerArgEnabledForSession",
+        )
+        if (printerArgEnabledForSession) {
+            // Resolve the spool dir lazily: external-files dir is created on-demand
+            // (returns null if external storage is missing — fall back to internal).
+            val dir = appContext.getExternalFilesDir(PRINTER_SPOOL_DIR_NAME)
+                ?: java.io.File(appContext.filesDir, PRINTER_SPOOL_DIR_NAME).apply { mkdirs() }
+            val cfg = runCatching {
+                PrinterRedirectBridge.setSpoolDir(dir.absolutePath)
+                PrinterRedirectBridge.setPrinterName(params.printerName.ifBlank { "cRDP" })
+            }
+            // If either setter fails at config time, the probe lied (or only some
+            // symbols are registered). Disable /printer for this session so rdpdr
+            // doesn't kick us with ERRCONNECT_POST_CONNECT_FAILED on every connect
+            // — most painfully visible as a "connection lost" toast immediately
+            // after every rotation/auto-resize-reconnect.
+            if (cfg.isFailure) {
+                android.util.Log.w(TAG, "PrinterRedirectBridge config failed: ${cfg.exceptionOrNull()?.message} — disabling /printer for this session")
+                printerArgEnabledForSession = false
+            }
+        } else if (params.printerShareEnabled) {
+            android.util.Log.w(
+                TAG,
+                "Printer share requested but native printer subsystem missing — " +
+                    "rebuild FreeRDP with CHANNEL_PRINTER_CLIENT=ON. Skipping /printer argv.",
+            )
+        }
 
         val inst = LibFreeRDP.newInstance(appContext)
         if (inst == 0L) {
@@ -371,7 +414,7 @@ class AFreeRdpEngine @Inject constructor(
 
         override fun onConnectionFailure() {
             val inst = instance
-            val msg = if (inst != 0L) LibFreeRDP.lastErrorString(inst).orEmpty() else ""
+            val msg = if (inst != 0L) sanitizeReason(LibFreeRDP.lastErrorString(inst)) else ""
             val text = msg.ifBlank { "Connection failed" }
             _state.value = EngineState.Error(text)
             connectFuture?.takeUnless { it.isCompleted }?.complete(Result.failure(RuntimeException(text)))
@@ -384,7 +427,7 @@ class AFreeRdpEngine @Inject constructor(
             // disconnect after another client takes over the session). So we have to
             // publish the terminal state from here, not wait for onDisconnected.
             val inst = instance
-            val rawReason = if (inst != 0L) LibFreeRDP.lastErrorString(inst).orEmpty() else ""
+            val rawReason = if (inst != 0L) sanitizeReason(LibFreeRDP.lastErrorString(inst)) else ""
             val previous = _state.value
             android.util.Log.d(
                 TAG,
@@ -409,7 +452,7 @@ class AFreeRdpEngine @Inject constructor(
             // Often skipped by FreeRDP for remote-initiated drops; treat it as a fallback
             // for paths where it does fire (e.g., post-disconnect on the user-initiated path).
             val inst = instance
-            val rawReason = if (inst != 0L) LibFreeRDP.lastErrorString(inst).orEmpty() else ""
+            val rawReason = if (inst != 0L) sanitizeReason(LibFreeRDP.lastErrorString(inst)) else ""
             val previous = _state.value
             android.util.Log.d(
                 TAG,
@@ -583,6 +626,15 @@ class AFreeRdpEngine @Inject constructor(
     private fun blitterFallbackWidth() = 1280
     private fun blitterFallbackHeight() = 720
 
+    // freerdp_get_last_error_string returns the literal "Success." when no error code
+    // was set — several disconnect paths tear down without setting one, so unfiltered
+    // it surfaces as "Connection lost: Success." Treat as blank so callers fall back.
+    private fun sanitizeReason(reason: String?): String {
+        val trimmed = reason?.trim().orEmpty().trimEnd('.', ' ')
+        if (trimmed.isEmpty()) return ""
+        return if (trimmed.equals("Success", ignoreCase = true)) "" else reason!!.trim()
+    }
+
     private fun readPrimaryPlainText(): String? {
         return try {
             val cm = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -688,14 +740,24 @@ class AFreeRdpEngine @Inject constructor(
         // are absent from this libfreerdp build (built without
         // WITH_FREERDP_DEPRECATED_COMMANDLINE), so use the unified `/cache:` form.
         args += "/cache:bitmap,glyph,offscreen"
-        // Negotiate the DisplayControl DVC so requestResolution() can push a
-        // new monitor layout mid-session. Requires our patched libfreerdp-android.so
-        // whose android_desktop_resize calls gdi_resize (matching every other
-        // FreeRDP client) — without that patch, a server-side resize after the
-        // DisplayControl push leaves the GDI primary buffer at the old size and
-        // the next AVC444 frame tears down the session with CHANNEL_RC_NULL_DATA
-        // (error 16) inside gdi_OutputUpdate.
-        args += "/dynamic-resolution"
+        // DisplayControl mid-session resize via `/dynamic-resolution` races
+        // with the GFX channel on Android — a frame arriving in the ~50 ms
+        // window after sendMonitorLayout is decoded against stale surfaces,
+        // returns CHANNEL_RC_NULL_DATA, and freerdp_check_event_handles tears
+        // the run loop down with "Failed to check FreeRDP file descriptor"
+        // (reproducible across both AVC444 and RFX/progressive paths). The
+        // gdi_resize patch in android_desktop_resize fixes the GDI primary
+        // buffer but not the GFX surface set.
+        //
+        // For auto-resolution profiles we drop /dynamic-resolution entirely
+        // — requestResolution() then returns false and SessionViewModel
+        // falls back to a clean disconnect+reconnect at the new size. Slower
+        // per rotation (1–2 s) but survives every rotation. Profiles pinned
+        // to a fixed resolution never resize mid-session, so /dynamic-resolution
+        // stays on there in case the server-side DPI hint helps with rendering.
+        if (!p.autoResolution) {
+            args += "/dynamic-resolution"
+        }
         val qualityTok = when (p.audioQuality) {
             com.crdp.core.rdp.engine.AudioQuality.Dynamic -> "dynamic"
             com.crdp.core.rdp.engine.AudioQuality.Medium -> "medium"
@@ -734,11 +796,44 @@ class AFreeRdpEngine @Inject constructor(
             val enc = if (p.cameraEncode) "1" else "0"
             args += "/dvc:rdpecam,device:$devTok,encode:$enc,quality:2"
         }
+        // Printer redirection: gated on printerArgEnabledForSession (NOT
+        // p.printerShareEnabled directly). When the native printer subsystem
+        // isn't compiled into libfreerdp-client3.so, emitting /printer makes
+        // rdpdr try to dlopen the missing libprinter-client.so and tears the
+        // session down with ERRCONNECT_POST_CONNECT_FAILED — connections then
+        // immediately drop and reconnect in a loop. See connect() for the gate.
+        if (printerArgEnabledForSession) {
+            val safeName = p.printerName.ifBlank { "cRDP" }
+                .replace(',', ' ').replace(':', ' ').trim()
+            // Driver hint "Microsoft Print to PDF" matches Windows' in-box PDF
+            // virtual printer (present on Win10 1809+ and Win11). The server
+            // installs the redirected printer with that driver, so when an app
+            // prints to it the spool payload arrives as a PDF instead of XPS /
+            // PostScript. PDF lands naturally in android.print.PrintManager
+            // (which accepts only PDF) and in any external PDF viewer.
+            //
+            // The exact-match gotcha that bit us earlier ("Microsoft XPS
+            // Document Writer v4" was silently dropped) doesn't apply here:
+            // "Microsoft Print to PDF" is shipped in the in-box driver list.
+            // If it ever isn't (e.g. Server core), Windows falls back to Easy
+            // Print and we still get XPS — the spool watcher handles either.
+            args += "/printer:$safeName,Microsoft Print to PDF"
+        }
         args += "/multitouch"
+        if (p.keyboardLayoutId != 0) {
+            args += "/kbd:lang:0x%04X".format(p.keyboardLayoutId)
+        }
         args += "/sec:nla"
         // Restrict Negotiate SPNEGO to NTLM only; skips Kerberos (no KDC in direct-IP scenarios).
         args += "/auth-pkg-list:ntlm"
         args += "/log-level:WARN"
+        // Bump rdpdr + printer channel logs to DEBUG so we can see why the
+        // virtual printer isn't appearing on the server. Override is per-tag
+        // so the rest of the log stays quiet.
+        if (printerArgEnabledForSession) {
+            args += "/log-filters:com.freerdp.channels.rdpdr.client:TRACE,com.freerdp.channels.printer.client:TRACE,com.freerdp.channels.printer.client.android:TRACE"
+        }
+        android.util.Log.i(TAG, "freerdp argv: ${args.joinToString(" ")}")
         return args.toTypedArray()
     }
 
@@ -749,6 +844,7 @@ class AFreeRdpEngine @Inject constructor(
     private companion object {
         const val TAG = "AFreeRdpEngine"
         const val CLIP_DEBOUNCE_MS = 150L
+        const val PRINTER_SPOOL_DIR_NAME = "printer_spool"
 
         // FreeRDP client/client.c — FreeRDPTouchEventType
         const val FREERDP_TOUCH_DOWN = 0x01

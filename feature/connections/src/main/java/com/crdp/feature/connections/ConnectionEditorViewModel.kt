@@ -53,6 +53,8 @@ data class EditorUiState(
     val microphoneOverride: Boolean? = null,
     /** null = use app default; plain-text clipboard with remote (direct RDP). */
     val clipboardSyncOverride: Boolean? = null,
+    /** null = use app default; expose a virtual printer to the remote session. */
+    val printerShareOverride: Boolean? = null,
     val audioQuality: AudioQuality = AudioQuality.UseAppDefault,
     val cameraMode: CameraMode = CameraMode.UseAppDefault,
     /** Native rdpecam device id when cameraMode == Specific; null otherwise. */
@@ -112,9 +114,30 @@ class ConnectionEditorViewModel @Inject constructor(
     fun updateAudioMode(value: AudioMode) = _state.update { it.copy(audioMode = value) }
     fun updateMicrophoneOverride(value: Boolean?) = _state.update { it.copy(microphoneOverride = value) }
     fun updateClipboardSyncOverride(value: Boolean?) = _state.update { it.copy(clipboardSyncOverride = value) }
+    fun updatePrinterShareOverride(value: Boolean?) = _state.update { it.copy(printerShareOverride = value) }
     fun updateAudioQuality(value: AudioQuality) = _state.update { it.copy(audioQuality = value) }
     fun updateCameraMode(value: CameraMode) = _state.update { it.copy(cameraMode = value) }
     fun updateCameraDeviceId(value: String?) = _state.update { it.copy(cameraDeviceId = value?.takeIf { v -> v.isNotBlank() }) }
+
+    private var newProfileDefaultsApplied = false
+
+    /**
+     * Seed a brand-new profile's resolution fields from the app-level "Default
+     * resolution" setting. No-op once applied or for an existing profile that
+     * was hydrated from the repo.
+     */
+    fun applyNewProfileDefaults(autoResolution: Boolean, width: Int, height: Int) {
+        if (newProfileDefaultsApplied) return
+        if (!_state.value.isNew) return
+        newProfileDefaultsApplied = true
+        _state.update {
+            it.copy(
+                autoResolution = autoResolution,
+                width = width.toString(),
+                height = height.toString(),
+            )
+        }
+    }
 
     /**
      * Persist [entry] (assigning an id when blank) and immediately link it to the
@@ -158,6 +181,7 @@ class ConnectionEditorViewModel @Inject constructor(
                     audioQuality = s.audioQuality,
                     cameraMode = s.cameraMode,
                     cameraDeviceId = s.cameraDeviceId,
+                    printerShareOverride = s.printerShareOverride,
                 )
                 EditorMode.Gateway -> GatewayConnectionProfile(
                     id = id,
@@ -177,6 +201,7 @@ class ConnectionEditorViewModel @Inject constructor(
                     audioQuality = s.audioQuality,
                     cameraMode = s.cameraMode,
                     cameraDeviceId = s.cameraDeviceId,
+                    printerShareOverride = s.printerShareOverride,
                 )
             }
             repository.upsert(profile)
@@ -208,6 +233,7 @@ class ConnectionEditorViewModel @Inject constructor(
             audioQuality = p.audioQuality,
             cameraMode = p.cameraMode,
             cameraDeviceId = p.cameraDeviceId,
+            printerShareOverride = p.printerShareOverride,
             isNew = false,
             existingId = id,
         )
@@ -228,6 +254,7 @@ class ConnectionEditorViewModel @Inject constructor(
             audioQuality = p.audioQuality,
             cameraMode = p.cameraMode,
             cameraDeviceId = p.cameraDeviceId,
+            printerShareOverride = p.printerShareOverride,
             isNew = false,
             existingId = id,
         )

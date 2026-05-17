@@ -111,14 +111,30 @@ FREERDP_BUILD_SCRIPT="$FREERDP_ROOT/scripts/android-build-freerdp.sh"
 FREERDP_BUILD_SCRIPT_BAK="$WORK/android-build-freerdp.sh.bak"
 if [ -f "$FREERDP_BUILD_SCRIPT" ] && ! grep -q "CHANNEL_RDPECAM_CLIENT" "$FREERDP_BUILD_SCRIPT"; then
     cp -p "$FREERDP_BUILD_SCRIPT" "$FREERDP_BUILD_SCRIPT_BAK"
-    # Two patches to android-build-freerdp.sh:
+    # Patches to android-build-freerdp.sh:
     #  - CHANNEL_RDPECAM_CLIENT=ON enables the rdpecam Android HAL.
+    #  - CHANNEL_PRINTER=ON + CHANNEL_PRINTER_CLIENT=ON enable the printer
+    #    channel with our channels/printer/client/android/ file-spool backend.
+    #    CHANNEL_PRINTER_CLIENT is a CMAKE_DEPENDENT_OPTION on CHANNEL_PRINTER —
+    #    passing only the client flag gets force-OFF'd by cmake unless the parent
+    #    is also ON, because the channel's ChannelOptions.cmake defaults
+    #    OPTION_DEFAULT to OFF on Android (no CUPS).
     #  - Extend CMAKE_SHARED_LINKER_FLAGS with -Wl,-z,max-page-size=16384 so
     #    libfreerdp3 / libfreerdp-client3 / libwinpr3 LOAD segments are aligned
     #    for Android 15+ devices running with 16KB pages.
     awk '/^CMAKE_CMD_ARGS="-DANDROID_NDK=\$ANDROID_NDK \\$/ {
             print
             print "\t-DCHANNEL_RDPECAM_CLIENT=ON \\"
+            print "\t-DCHANNEL_PRINTER=ON \\"
+            print "\t-DCHANNEL_PRINTER_CLIENT=ON \\"
+            # WinPR built-in RC4 + MD4 instead of OpenSSL'\''s legacy provider.
+            # OpenSSL 3.x banished RC4/MD4 to a non-default provider; without
+            # this, NTLM (used by NLA in /sec:nla) fails with
+            # SEC_E_INTERNAL_ERROR because ntlm_init_rc4_seal_states cant fetch
+            # EVP_rc4(). Surfaces as "The connection transport layer failed"
+            # right after the cert prompt on every connect.
+            print "\t-DWITH_INTERNAL_RC4=ON \\"
+            print "\t-DWITH_INTERNAL_MD4=ON \\"
             next
          }
          /-DCMAKE_SHARED_LINKER_FLAGS="-L\$BUILD_DST\/\$ARCH" \\$/ {

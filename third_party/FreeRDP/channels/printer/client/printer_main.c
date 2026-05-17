@@ -656,10 +656,15 @@ static DWORD WINAPI printer_thread_func(LPVOID arg)
 
 		if (irp == NULL)
 		{
-			WLog_ERR(TAG, "InterlockedPopEntrySList failed!");
-			error = ERROR_INTERNAL_ERROR;
-			break;
+			/* cRDP: spurious wakeup from a (push + SetEvent) sequence racing
+			 * an earlier Pop on this same worker — the list is genuinely empty.
+			 * Treating it as fatal kills the channel mid-job (manifests as
+			 * "connection lost" on the first print). Just loop back and wait
+			 * for the next real SetEvent. */
+			continue;
 		}
+		WLog_INFO(TAG, "[crdp-trace] worker popped IRP MJ=0x%02x CompletionId=%u",
+		          irp->MajorFunction, irp->CompletionId);
 
 		if ((error = printer_process_irp(printer_dev, irp)))
 		{
@@ -686,6 +691,9 @@ static UINT printer_irp_request(DEVICE* device, IRP* irp)
 
 	WINPR_ASSERT(printer_dev);
 	WINPR_ASSERT(irp);
+
+	WLog_INFO(TAG, "[crdp-trace] printer_irp_request: MJ=0x%02x MN=0x%02x async=%d",
+	          irp->MajorFunction, irp->MinorFunction, printer_dev->async);
 
 	if (printer_dev->async)
 	{
@@ -985,6 +993,17 @@ static UINT printer_register(PDEVICE_SERVICE_ENTRY_POINTS pEntryPoints, rdpPrint
 	                               FreeRDP_SynchronousStaticChannels))
 		printer_dev->async = TRUE;
 
+#if defined(__ANDROID__)
+	/* cRDP: WinPR's InterlockedPopEntrySList+Event coordination on Android
+	 * empirically never wakes the worker thread after a push, so async IRPs
+	 * sit in the SList forever and the Windows spooler times out marking the
+	 * job as "Error". Force synchronous in-line processing — printer_irp_request
+	 * runs printer_process_irp directly on the rdpdr receive thread. The cost
+	 * is one extra blocking call per IRP on rdpdr; the benefit is print jobs
+	 * that actually complete. */
+	printer_dev->async = FALSE;
+#endif
+
 	if (!printer_load_from_config(pEntryPoints->rdpcontext->settings, printer, printer_dev))
 		goto error_out;
 
@@ -1108,6 +1127,9 @@ FREERDP_ENTRY_POINT(
 		    "cups"
 #elif defined(_WIN32)
 		    "win"
+#elif defined(__ANDROID__)
+		    /* cRDP: file-spool backend, see channels/printer/client/android. */
+		    "android"
 #else
 		    ""
 #endif

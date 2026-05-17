@@ -1,10 +1,49 @@
 <?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
-    android:viewportWidth="108"
-    android:viewportHeight="108">
+    android:viewportWidth="192"
+    android:viewportHeight="192">
+
+    <!-- Isometric monitor, front face -->
     <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M30,38h48v8H30zM30,54h48v8H30zM30,70h32v8H30z" />
+        android:fillColor="#FF001847"
+        android:pathData="M40,70 L96,42 L96,118 L40,146 Z" />
+    <!-- Top face -->
+    <path
+        android:fillColor="#FF0843A0"
+        android:pathData="M40,70 L96,42 L152,70 L96,98 Z" />
+    <!-- Right face -->
+    <path
+        android:fillColor="#FF072A75"
+        android:pathData="M96,42 L152,70 L152,146 L96,118 Z" />
+
+    <!-- Screen surface (top inset) with vertical gradient -->
+    <path android:pathData="M52,71 L96,49 L140,71 L96,93 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="96" android:startY="49"
+                android:endX="96" android:endY="93">
+                <item android:offset="0" android:color="#FFFFFFFF"/>
+                <item android:offset="1" android:color="#FFD8E2FF"/>
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- Floating cursor: translate(98,88) rotate(-8) -->
+    <group
+        android:translateX="98"
+        android:translateY="88"
+        android:pivotX="0"
+        android:pivotY="0"
+        android:rotation="-8">
+        <path
+            android:fillColor="#FFFFFFFF"
+            android:strokeColor="#FF001847"
+            android:strokeWidth="3"
+            android:strokeLineJoin="round"
+            android:pathData="M0,0 L0,50 L13,38 L21,56 L29,52 L21,35 L37,35 Z" />
+    </group>
 </vector>

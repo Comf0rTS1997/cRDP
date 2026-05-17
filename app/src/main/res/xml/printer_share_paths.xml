@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FileProvider exports for printer-spool files. external-files-path is scoped
+  to Context.getExternalFilesDir, so we only expose the printer_spool subdir
+  and nothing else from the app's external files area.
+-->
+<paths>
+    <external-files-path name="printer_spool" path="printer_spool/" />
+    <files-path name="printer_spool_internal" path="printer_spool/" />
+</paths>

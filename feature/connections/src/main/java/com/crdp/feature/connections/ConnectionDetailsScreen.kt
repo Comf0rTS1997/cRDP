@@ -254,6 +254,11 @@ fun ConnectionDetailsPaneContent(
                     value = clipboardSyncLabel(profile),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                StatCard(
+                    label = "Printer share",
+                    value = printerShareLabel(profile),
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
 
             SectionLabel("Display & performance")
@@ -306,6 +311,19 @@ private fun clipboardSyncLabel(profile: ConnectionProfile): String = when (profi
         false -> "Off"
     }
     is GatewayConnectionProfile -> when (profile.clipboardSyncOverride) {
+        null -> "App default"
+        true -> "On"
+        false -> "Off"
+    }
+}
+
+private fun printerShareLabel(profile: ConnectionProfile): String = when (profile) {
+    is DirectConnectionProfile -> when (profile.printerShareOverride) {
+        null -> "App default"
+        true -> "On"
+        false -> "Off"
+    }
+    is GatewayConnectionProfile -> when (profile.printerShareOverride) {
         null -> "App default"
         true -> "On"
         false -> "Off"

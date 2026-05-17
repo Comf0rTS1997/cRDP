@@ -90,6 +90,12 @@ fun AboutScreen(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "Licensed under GNU GPL v3.0",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             Text(
@@ -97,8 +103,8 @@ fun AboutScreen(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.padding(
-                    start = 20.dp,
-                    end = 20.dp,
+                    start = 16.dp,
+                    end = 16.dp,
                     top = 8.dp,
                     bottom = 8.dp,
                 ),

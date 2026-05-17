@@ -52,6 +52,18 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.crdp.core.rdp.model.AudioMode
 import com.crdp.core.rdp.model.AudioQuality
 
+/**
+ * App-level defaults applied to a brand-new profile on first composition. Used
+ * to seed [EditorUiState.width]/[EditorUiState.height]/[EditorUiState.autoResolution]
+ * from the user's "Default resolution" setting so the editor stops always
+ * defaulting to 1280x720.
+ */
+data class NewProfileDefaults(
+    val autoResolution: Boolean = false,
+    val width: Int = 1280,
+    val height: Int = 720,
+)
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ConnectionEditorRoute(
@@ -59,8 +71,18 @@ fun ConnectionEditorRoute(
     onBack: () -> Unit,
     onSaved: (String) -> Unit,
     onSaveAndConnect: (String) -> Unit,
+    newProfileDefaults: NewProfileDefaults = NewProfileDefaults(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    androidx.compose.runtime.LaunchedEffect(state.isNew, newProfileDefaults) {
+        if (state.isNew) {
+            viewModel.applyNewProfileDefaults(
+                autoResolution = newProfileDefaults.autoResolution,
+                width = newProfileDefaults.width,
+                height = newProfileDefaults.height,
+            )
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -362,6 +384,36 @@ fun ConnectionEditorRoute(
                 FilterChip(
                     selected = state.clipboardSyncOverride == false,
                     onClick = { viewModel.updateClipboardSyncOverride(false) },
+                    label = { Text("Off") },
+                )
+            }
+            Text(
+                "Printer share",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                "Expose a virtual printer to the remote session. Print jobs land in this app's external files dir.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilterChip(
+                    selected = state.printerShareOverride == null,
+                    onClick = { viewModel.updatePrinterShareOverride(null) },
+                    label = { Text("App default") },
+                )
+                FilterChip(
+                    selected = state.printerShareOverride == true,
+                    onClick = { viewModel.updatePrinterShareOverride(true) },
+                    label = { Text("On") },
+                )
+                FilterChip(
+                    selected = state.printerShareOverride == false,
+                    onClick = { viewModel.updatePrinterShareOverride(false) },
                     label = { Text("Off") },
                 )
             }

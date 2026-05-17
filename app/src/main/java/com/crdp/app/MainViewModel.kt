@@ -144,6 +144,10 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch { userPreferencesRepository.setDefaultClipboardSync(value) }
     }
 
+    fun setDefaultPrinterShare(value: Boolean) {
+        viewModelScope.launch { userPreferencesRepository.setDefaultPrinterShare(value) }
+    }
+
     /**
      * Persists the new global vault-encryption preference AND rewrites the on-disk
      * vault file in the matching format. When toggling off, entries become plaintext

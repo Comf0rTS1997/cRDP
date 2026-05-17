@@ -114,6 +114,12 @@ class DirectRdpSession @Inject constructor(
                 },
                 cameraDeviceId = profile.cameraDeviceId,
                 clipboardSyncEnabled = profile.clipboardSyncOverride ?: true,
+                // SessionViewModel.applyEffectivePrinter resolves the app default
+                // before we reach connect(), so a null override here means the
+                // user genuinely opted out for this profile.
+                printerShareEnabled = profile.printerShareOverride ?: false,
+                keyboardLayoutId = profile.keyboardLayoutId,
+                autoResolution = profile.autoResolution,
             ),
         )
     }

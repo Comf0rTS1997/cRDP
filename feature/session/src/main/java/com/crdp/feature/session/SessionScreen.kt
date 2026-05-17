@@ -29,7 +29,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Keyboard
@@ -164,6 +163,14 @@ data class SessionUserSettings(
     val cameraEncode: Boolean = true,
     /** App-wide default for two-way plain-text clipboard sync (direct profiles only). */
     val defaultClipboardSync: Boolean = true,
+    /** App-wide default for printer share / virtual printer redirection (direct profiles only). */
+    val defaultPrinterShare: Boolean = false,
+    /**
+     * Windows keyboard layout id (e.g. 0x0409) the FreeRDP server should assume
+     * the client is using. 0 means "let FreeRDP auto-detect from the host
+     * locale", matching pre-wiring behavior.
+     */
+    val keyboardLayoutId: Int = 0,
 )
 
 @Composable
@@ -300,6 +307,14 @@ fun SessionRoute(
 
     LaunchedEffect(settings.defaultClipboardSync) {
         viewModel.setClipboardDefaultsHint(settings.defaultClipboardSync)
+    }
+
+    LaunchedEffect(settings.defaultPrinterShare) {
+        viewModel.setPrinterShareHint(settings.defaultPrinterShare)
+    }
+
+    LaunchedEffect(settings.keyboardLayoutId) {
+        viewModel.setKeyboardLayoutHint(settings.keyboardLayoutId)
     }
 
     // Mic is a runtime-prompt permission. Only request when the resolved decision
@@ -1762,14 +1777,6 @@ private fun SessionScreen(
                                                 "${profileWidth(profile)}×${profileHeight(profile)}",
                                             )
                                         }
-                                    },
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("File transfer") },
-                                    leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null) },
-                                    onClick = {
-                                        dockMenuOpen = false
-                                        scope.launch { snackbarHostState.showSnackbar("File transfer not available") }
                                     },
                                 )
                                 HorizontalDivider()

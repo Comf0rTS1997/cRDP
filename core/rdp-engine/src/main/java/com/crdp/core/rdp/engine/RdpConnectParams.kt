@@ -36,4 +36,26 @@ data class RdpConnectParams(
     val cameraEncode: Boolean = true,
     /** Plain-text clipboard sync with the remote session (direct FreeRDP engine only). */
     val clipboardSyncEnabled: Boolean = true,
+    /**
+     * Expose a virtual printer to the remote session. The bundled FreeRDP printer
+     * channel (channels/printer/client/android) spools each remote print job to a
+     * file under the app's external-files dir; a FileObserver in the app layer
+     * surfaces each completed job to the user.
+     */
+    val printerShareEnabled: Boolean = false,
+    /** Display name advertised over RDPDR; the server uses it as the printer label. */
+    val printerName: String = "cRDP",
+    /**
+     * Windows keyboard layout id (e.g. 0x0409 for US English). 0 = let FreeRDP
+     * auto-detect from the host system locale, which is the historical behavior.
+     */
+    val keyboardLayoutId: Int = 0,
+    /**
+     * True when the profile follows the window size — every config change
+     * (rotation, DeX resize) issues a `sendMonitorLayout`. The engine uses
+     * this to opt out of AVC444 GFX, which races with mid-session
+     * DisplayControl resize and tears the session down with
+     * "Failed to check FreeRDP file descriptor".
+     */
+    val autoResolution: Boolean = false,
 )

@@ -147,25 +147,10 @@ private fun CrdpNavigationRail(
 ) {
     NavigationRail(
         modifier = modifier,
-        header = {
-            Spacer(Modifier.size(8.dp))
-            // Launcher-icon-style logo so the rail matches the app icon.
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(colorResource(R.color.ic_launcher_background)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = "c",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onPrimary,
-                )
-            }
-            Spacer(Modifier.size(8.dp))
-        },
+        // No header — the first rail item lines up vertically with the search bar
+        // on the right pane (both sit at the top of their respective columns with
+        // matching default padding).
+        header = null,
     ) {
         RailItem(
             icon = Icons.Default.Monitor,

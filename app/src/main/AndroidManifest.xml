@@ -6,6 +6,8 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Notification permission for the printer-spool job notifier (Android 13+). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <uses-feature
         android:name="android.hardware.touchscreen"
@@ -52,6 +54,22 @@
           termux-x11 pattern. The service is bound on demand and only filters
           while a session is active — no observation of other apps.
         -->
+        <!--
+          FileProvider for sharing spooled print jobs with external viewers
+          (XPS reader, browser, Files-app share-sheet). Scoped to the
+          printer_spool subdirs in external- and internal-files dirs; no
+          access leaks outside that.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.printer.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/printer_share_paths" />
+        </provider>
+
         <service
             android:name=".KeyInterceptorService"
             android:exported="true"

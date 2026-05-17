@@ -1,83 +1,97 @@
+<p align="center">
+  <img src="docs/screenshots/icon.svg" width="128" height="128" alt="cRDP icon"/>
+</p>
+
 # cRDP
 
-Android RDP client. Two transports: **direct** (TCP to a Windows host) and
-**gateway** (relay via WebSocket through a custom gateway service).
+A modern Android RDP client for connecting to Windows desktops from your phone,
+tablet, or DeX/desktop-mode display.
 
-## Building
+Built on FreeRDP, designed for touch-first use, and ready for big screens.
 
-Default build uses the stub RDP engine — no native toolchain required, no
-external dependencies, but Direct connections will fail with
-`RDP engine not configured`.
+> ⚠️ **Work in progress.** cRDP is still work in progress - features may
+> change, break, or disappear between builds, and rough edges are expected.
+> This project is also **heavily vibe-coded**: a lot of it was written with
+> AI assistants (Claude, Cursor) in the loop. Treat it as an enthusiastic
+> hobby project, not a polished commercial product.
 
-```sh
-./gradlew :app:assembleDebug
-```
+> Looking for build instructions, module layout, or engine internals?
+> See the **[Technical Wiki](docs/TECHNICAL.md)**.
 
-To compile in the real FreeRDP-backed engine:
+---
 
-```sh
-git submodule update --init --recursive
-./scripts/build-freerdp.sh           # builds .so artifacts (slow first time)
-./gradlew :app:assembleDebug -Pcrdp.engine=afreerdp
-```
+## Screenshots
 
-On Windows / PowerShell:
+**Phone**
 
-```powershell
-git submodule update --init --recursive
-pwsh scripts\build-freerdp.ps1
-.\gradlew.bat :app:assembleDebug "-Pcrdp.engine=afreerdp"
-```
+<p align="center">
+  <img src="docs/screenshots/phone-connections.png" width="320" alt="Phone — Connections list"/>
+</p>
 
-> Note: PowerShell's parser splits unquoted property arguments on `.`; always
-> quote `-P…` flags when the property name contains a dot.
+**Desktop / Samsung DeX**
 
-### Build prerequisites for `crdp.engine=afreerdp`
+<p align="center">
+  <img src="docs/screenshots/dex-connections.png" width="960" alt="DeX — Connections two-pane"/>
+</p>
+---
 
-Building FreeRDP from source needs:
+## Features
 
-- Android SDK + NDK r26 or newer (export `ANDROID_SDK` / `ANDROID_NDK`,
-  or set `sdk.dir` / `ndk.dir` in `local.properties`)
-- CMake ≥ 3.13, GNU Make
-- autotools, perl, yasm, nasm (OpenSSL / FFmpeg builds)
-- Bash (Git Bash on Windows is sufficient)
+### Connect your way
+- **Direct connections** — straight TCP to any Windows host on your network.
+- **Gateway connections** — relay through a WebSocket gateway when you can't
+  reach the host directly.
+- **Saved profiles** with quick-launch, per-connection settings, and an
+  organized connection list.
 
-If you don't want the toolchain, drop pre-built `.so` files into
-`engine/afreerdp/prebuilts/<abi>/` and run with `-Pcrdp.engine=afreerdp`.
-The prebuilts directory is overlaid onto `jniLibs` at build time.
+### Touch-first, but desktop-ready
+- **Real multi-touch** via RDPEI — direct touch on the remote desktop, not just
+  emulated mouse clicks.
+- **Tap-and-half drag**, signed scroll wheel, and gesture-aware input that
+  feels right on a phone.
+- **DeX / desktop-mode shell** — a proper windowed experience when you dock
+  your phone or run on a large screen.
 
-ABIs shipped: `arm64-v8a`, `armeabi-v7a`, `x86_64`. (`x86` deliberately dropped.)
+### Looks and feels right
+- Material 3 UI with light/dark theming.
+- Clean session screen that gets out of the way.
+- Connection details and session info when you want them.
 
-## Module layout
+### Secure by default
+- **Credential vault** with biometric unlock.
+- Credentials stay on-device; nothing shipped to the cloud.
 
-```
-:app                      Application + DI wiring
-:core:ui                  Compose theming, biometric prompter
-:core:rdp                 Connection profiles, RdpSessionPort, repositories
-:core:rdp-engine          RdpEngine seam — replaceable boundary for any RDP
-                          transport implementation. No 3rd-party types here.
-:rdp-direct               Direct TCP transport (DirectRdpSession). Routes
-                          all wire I/O through @DirectEngine RdpEngine.
-:rdp-gateway              WebSocket-relay transport.
-:engine:afreerdp          [optional] FreeRDP-backed RdpEngine. Included only
-                          when -Pcrdp.engine=afreerdp.
-:feature:connections      UI: profile list/editor, vault.
-:feature:session          UI: live session screen, surface attach, challenge dialogs.
-```
+### Hardware redirection
+- **Webcam redirect** with H.264 — follows phone orientation.
+- **Printer redirect** (Android print framework).
+- Clipboard sync between phone and remote desktop.
 
-## The `RdpEngine` seam
+---
 
-`com.crdp.core.rdp.engine.RdpEngine` is a small (10-method) interface that
-hides which RDP library actually moves bytes. To swap implementations:
+## Install
 
-| Swap | Effort |
-|---|---|
-| Bump FreeRDP version | `git checkout <new-tag>` in submodule, rerun build script. |
-| Replace aFreeRDP with custom JNI / different RDP library | New module under `engine/<name>/` implementing `RdpEngine`; bind it `@DirectEngine`; remove `:engine:afreerdp` from `settings.gradle.kts`. No edits in `:feature:*`, `:app`, `:rdp-direct`, or `:core:*`. |
-| Mock for tests | Provide a `FakeRdpEngine` in a test source set; override `@DirectEngine` via Hilt's `@TestInstallIn`. |
+Grab the latest APK from the Releases page, or build from source — see the
+[Technical Wiki](docs/TECHNICAL.md#building) for build instructions.
 
-See `THIRD_PARTY.md` for license info.
+---
 
-## Vibe Code
+## Quick start
 
-This  project is heavily vibe coded. Tools used including Claude and Cursor.
+1. Open cRDP and tap **+** to add a connection.
+2. Enter the host address, username, and (optionally) save credentials to the
+   vault.
+3. Tap the profile to connect.
+
+That's it. For gateway setups, advanced flags, or troubleshooting, see the
+[Technical Wiki](docs/TECHNICAL.md).
+
+---
+
+## License & credits
+
+cRDP is free software released under the
+[GNU General Public License v3.0](LICENSE).
+
+It is built on top of [FreeRDP](https://www.freerdp.com/) and a number of
+other open-source components — see [THIRD_PARTY.md](THIRD_PARTY.md) for the
+full list, and the in-app About screen for per-component license text.

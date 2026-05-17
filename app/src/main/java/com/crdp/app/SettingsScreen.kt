@@ -32,6 +32,7 @@ import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Vibration
 import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -112,6 +113,7 @@ fun SettingsScreen(
     onDefaultAudioQuality: (String) -> Unit,
     onDefaultCameraMode: (String) -> Unit,
     onDefaultClipboardSync: (Boolean) -> Unit,
+    onDefaultPrinterShare: (Boolean) -> Unit,
     onOpenVault: () -> Unit,
     onOpenAbout: () -> Unit,
     onBack: () -> Unit,
@@ -184,6 +186,17 @@ fun SettingsScreen(
                     Switch(
                         checked = appSettings.defaultClipboardSync,
                         onCheckedChange = onDefaultClipboardSync,
+                    )
+                },
+            )
+            SettingRow(
+                icon = Icons.Default.Print,
+                title = "Share printer with remote",
+                subtitle = "Expose a virtual printer; jobs spool to Android/data/.../printer_spool",
+                trailing = {
+                    Switch(
+                        checked = appSettings.defaultPrinterShare,
+                        onCheckedChange = onDefaultPrinterShare,
                     )
                 },
             )
@@ -276,7 +289,7 @@ fun SettingsScreen(
             SettingRow(
                 icon = Icons.Default.Monitor,
                 title = "Render backend",
-                subtitle = "Auto picks GLES on supported devices",
+                subtitle = "Auto uses HWUI Canvas (safe default); GLES is experimental",
                 value = appSettings.renderBackend,
                 onClick = { chooser = ChooserKind.RenderBackend },
             )

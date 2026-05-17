@@ -35,6 +35,7 @@ import com.crdp.feature.connections.ConnectionDetailsRoute
 import com.crdp.feature.connections.ConnectionDetailsViewModel
 import com.crdp.feature.connections.ConnectionEditorRoute
 import com.crdp.feature.connections.ConnectionEditorViewModel
+import com.crdp.feature.connections.NewProfileDefaults
 import com.crdp.feature.connections.ConnectionListRoute
 import com.crdp.feature.connections.ConnectionListViewModel
 import com.crdp.feature.connections.ConnectionViewMode
@@ -42,8 +43,10 @@ import com.crdp.feature.connections.ConnectionsTwoPaneRoute
 import com.crdp.feature.connections.VaultRoute
 import com.crdp.app.prefs.CameraModes
 import com.crdp.app.prefs.ConnectionViewModes
+import com.crdp.app.prefs.KeyboardLayouts
 import com.crdp.app.prefs.RenderBackends
 import com.crdp.app.prefs.RenderSamplingOptions
+import com.crdp.app.prefs.Resolutions
 import com.crdp.core.rdp.engine.RenderBackend
 import com.crdp.core.rdp.engine.RenderOptions
 import com.crdp.core.rdp.engine.SamplingMode
@@ -54,11 +57,29 @@ import com.crdp.feature.session.SessionViewModel
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 
+/**
+ * Translate the app's "Default resolution" string ("Match device" / "WxH") into
+ * the editor's initial autoResolution + width/height for brand-new profiles.
+ * Unknown / malformed values fall back to autoResolution=false at 1280x720,
+ * matching [com.crdp.feature.connections.NewProfileDefaults]'s own defaults.
+ */
+private fun resolveNewProfileDefaults(setting: String): NewProfileDefaults {
+    if (setting == Resolutions.MATCH_DEVICE) {
+        return NewProfileDefaults(autoResolution = true, width = 1280, height = 720)
+    }
+    val normalized = Resolutions.normalize(setting) ?: return NewProfileDefaults()
+    val parts = normalized.split('x')
+    val w = parts.getOrNull(0)?.toIntOrNull() ?: return NewProfileDefaults()
+    val h = parts.getOrNull(1)?.toIntOrNull() ?: return NewProfileDefaults()
+    return NewProfileDefaults(autoResolution = false, width = w, height = h)
+}
+
 private suspend fun verifyBiometricForProfile(
     mainViewModel: MainViewModel,
     context: android.content.Context,
     profileId: String,
     vaultEncryption: Boolean,
+    notifyPromptOnPhone: Boolean,
 ): Boolean {
     val profile = mainViewModel.getProfile(profileId) ?: return true
     // Single global gate: only prompt when (a) vault encryption is enabled AND
@@ -68,6 +89,17 @@ private suspend fun verifyBiometricForProfile(
     if (!vaultEncryption) return true
     if (!mainViewModel.referencesVaultCredentials(profile)) return true
     val activity = context as? FragmentActivity ?: return false
+    // In expanded-window (tablet / DeX-on-external-display) mode the system
+    // biometric prompt is rendered on the phone's built-in screen, not on the
+    // external display the user is looking at. Surface a toast so they know
+    // where to look.
+    if (notifyPromptOnPhone) {
+        android.widget.Toast.makeText(
+            context,
+            "Check your phone to confirm fingerprint / device verification",
+            android.widget.Toast.LENGTH_LONG,
+        ).show()
+    }
     val result = BiometricPrompter.prompt(
         activity = activity,
         title = "Unlock vault",
@@ -196,6 +228,7 @@ class MainActivity : FragmentActivity(), KeyEventHost {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        maybeRequestPostNotifications()
         setContent {
             val mainViewModel: MainViewModel = hiltViewModel()
             val dynamicColor by mainViewModel.dynamicColor.collectAsStateWithLifecycle()
@@ -205,12 +238,14 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                 val navController = rememberNavController()
                 val coroutineScope = rememberCoroutineScope()
                 val context = LocalContext.current
+                val expandedWindow = isExpandedWindow()
 
                 fun connectWithBiometric(profileId: String) {
                     coroutineScope.launch {
                         if (verifyBiometricForProfile(
                                 mainViewModel, context, profileId,
                                 appSettings.vaultEncryption,
+                                notifyPromptOnPhone = expandedWindow,
                             )
                         ) {
                             navController.navigate("session/${Uri.encode(profileId)}")
@@ -223,6 +258,7 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                         if (verifyBiometricForProfile(
                                 mainViewModel, context, profileId,
                                 appSettings.vaultEncryption,
+                                notifyPromptOnPhone = expandedWindow,
                             )
                         ) {
                             navController.navigate("session/${Uri.encode(profileId)}") {
@@ -337,6 +373,7 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                                 onDefaultAudioQuality = mainViewModel::setDefaultAudioQuality,
                                 onDefaultCameraMode = mainViewModel::setDefaultCameraMode,
                                 onDefaultClipboardSync = mainViewModel::setDefaultClipboardSync,
+                                onDefaultPrinterShare = mainViewModel::setDefaultPrinterShare,
                                 onOpenVault = { navController.navigate("settings/vault") },
                                 onOpenAbout = { navController.navigate("settings/about") },
                                 onBack = { navController.popBackStack() },
@@ -394,6 +431,7 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                                 onBack = { navController.popBackStack() },
                                 onSaved = { navController.popBackStack() },
                                 onSaveAndConnect = ::saveAndConnectWithBiometric,
+                                newProfileDefaults = resolveNewProfileDefaults(appSettings.defaultResolution),
                             )
                         }
                         composable(
@@ -440,6 +478,8 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                                     defaultCameraDeviceId = appSettings.defaultCameraDeviceId,
                                     cameraEncode = appSettings.cameraEncode,
                                     defaultClipboardSync = appSettings.defaultClipboardSync,
+                                    defaultPrinterShare = appSettings.defaultPrinterShare,
+                                    keyboardLayoutId = KeyboardLayouts.layoutId(appSettings.keyboardLayout),
                                 ),
                             )
                         }
@@ -460,5 +500,29 @@ class MainActivity : FragmentActivity(), KeyEventHost {
         @JvmStatic
         @Volatile var activeInstance: MainActivity? = null
             private set
+
+        private const val POST_NOTIFICATIONS_REQUEST_CODE = 7041
+    }
+
+    /**
+     * Ask for POST_NOTIFICATIONS on first launch (Android 13+). Without this
+     * the PrinterSpoolWatcher's "Print job spooled" notifications are silently
+     * dropped by the framework — printer redirection still spools files to
+     * `printer_spool/` correctly, but the user never sees that anything
+     * happened. We don't block startup or gate any feature on the answer;
+     * if the user denies, the silent-spool behaviour is the same as before.
+     */
+    private fun maybeRequestPostNotifications() {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) return
+        val granted = androidx.core.content.ContextCompat.checkSelfPermission(
+            this,
+            android.Manifest.permission.POST_NOTIFICATIONS,
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (granted) return
+        androidx.core.app.ActivityCompat.requestPermissions(
+            this,
+            arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),
+            POST_NOTIFICATIONS_REQUEST_CODE,
+        )
     }
 }

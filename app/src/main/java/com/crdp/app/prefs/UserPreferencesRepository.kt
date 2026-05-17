@@ -40,6 +40,10 @@ data class AppSettings(
     val cameraEncode: Boolean = true,
     /** Default plain-text clipboard sync for connections that do not override (direct RDP). */
     val defaultClipboardSync: Boolean = true,
+    /** Default: expose a virtual printer for sessions that do not override. */
+    val defaultPrinterShare: Boolean = false,
+    /** Name advertised to the remote session for the redirected printer. */
+    val printerShareName: String = "cRDP",
     /**
      * Single global toggle for credential storage. When true, [VaultEntry]s are persisted
      * to an EncryptedFile (AES-256-GCM via the AndroidKeystore-backed MasterKey) AND the
@@ -109,7 +113,26 @@ object Resolutions {
 }
 
 object KeyboardLayouts {
-    val OPTIONS = listOf("US English", "UK English", "German", "French", "Japanese")
+    const val US_ENGLISH = "US English"
+    const val UK_ENGLISH = "UK English"
+    const val GERMAN = "German"
+    const val FRENCH = "French"
+    const val JAPANESE = "Japanese"
+    val OPTIONS = listOf(US_ENGLISH, UK_ENGLISH, GERMAN, FRENCH, JAPANESE)
+
+    /**
+     * Microsoft LCID for each picker label. Passed to FreeRDP as
+     * `/kbd:lang:0x<id>` so the RDP server interprets client scancodes against
+     * the intended layout instead of guessing from the server locale.
+     */
+    fun layoutId(label: String): Int = when (label) {
+        US_ENGLISH -> 0x0409
+        UK_ENGLISH -> 0x0809
+        GERMAN -> 0x0407
+        FRENCH -> 0x040C
+        JAPANESE -> 0x0411
+        else -> 0x0409
+    }
 }
 
 object DpiScales {
@@ -164,6 +187,8 @@ class UserPreferencesRepository @Inject constructor(
     private val defaultCameraDeviceIdKey = stringPreferencesKey("default_camera_device_id")
     private val cameraEncodeKey = booleanPreferencesKey("camera_encode_h264")
     private val defaultClipboardSyncKey = booleanPreferencesKey("default_clipboard_sync")
+    private val defaultPrinterShareKey = booleanPreferencesKey("default_printer_share")
+    private val printerShareNameKey = stringPreferencesKey("printer_share_name")
     private val vaultEncryptionKey = booleanPreferencesKey("vault_encryption")
 
     val dynamicColor: Flow<Boolean> = context.userPrefs.data.map { prefs ->
@@ -191,6 +216,8 @@ class UserPreferencesRepository @Inject constructor(
             defaultCameraDeviceId = prefs[defaultCameraDeviceIdKey]?.takeIf { it.isNotBlank() },
             cameraEncode = prefs[cameraEncodeKey] ?: true,
             defaultClipboardSync = prefs[defaultClipboardSyncKey] ?: true,
+            defaultPrinterShare = prefs[defaultPrinterShareKey] ?: false,
+            printerShareName = prefs[printerShareNameKey]?.takeIf { it.isNotBlank() } ?: "cRDP",
             vaultEncryption = prefs[vaultEncryptionKey] ?: true,
         )
     }
@@ -286,6 +313,16 @@ class UserPreferencesRepository @Inject constructor(
 
     suspend fun setDefaultClipboardSync(value: Boolean) {
         context.userPrefs.edit { it[defaultClipboardSyncKey] = value }
+    }
+
+    suspend fun setDefaultPrinterShare(value: Boolean) {
+        context.userPrefs.edit { it[defaultPrinterShareKey] = value }
+    }
+
+    /** Trims and falls back to "cRDP" if empty so the server never sees a blank label. */
+    suspend fun setPrinterShareName(value: String) {
+        val trimmed = value.trim().ifEmpty { "cRDP" }
+        context.userPrefs.edit { it[printerShareNameKey] = trimmed }
     }
 
     suspend fun setVaultEncryption(value: Boolean) {

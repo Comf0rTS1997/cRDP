@@ -55,6 +55,15 @@ data class DirectConnectionProfile(
     val cameraMode: CameraMode = CameraMode.UseAppDefault,
     /** Concrete native device id when [cameraMode] == Specific; null otherwise. */
     val cameraDeviceId: String? = null,
+    /** null = use app default; expose a virtual printer to the remote session. */
+    val printerShareOverride: Boolean? = null,
+    /**
+     * Windows keyboard layout id (e.g. 0x0409). 0 = use app default (resolved
+     * from settings at connect time, mirroring how audio/camera defaults are
+     * resolved). No per-profile editor surface today; the app default is the
+     * only producer.
+     */
+    val keyboardLayoutId: Int = 0,
 ) : ConnectionProfile()
 
 @Serializable
@@ -77,4 +86,7 @@ data class GatewayConnectionProfile(
     val audioQuality: AudioQuality = AudioQuality.UseAppDefault,
     val cameraMode: CameraMode = CameraMode.UseAppDefault,
     val cameraDeviceId: String? = null,
+    val printerShareOverride: Boolean? = null,
+    /** See [DirectConnectionProfile.keyboardLayoutId]. */
+    val keyboardLayoutId: Int = 0,
 ) : ConnectionProfile()

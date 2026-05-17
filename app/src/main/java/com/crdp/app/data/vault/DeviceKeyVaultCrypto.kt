@@ -42,6 +42,17 @@ internal class DeviceKeyVaultCrypto(
         const val ALIAS = "crdp_vault_master_v2"
         const val DEFAULT_VALIDITY_SECONDS = 300
         private const val KEYSTORE = "AndroidKeyStore"
+        // Per-store Tink keyset slot. EncryptedFile defaults to a single
+        // shared slot ((__androidx_security_crypto_encrypted_file_pref__,
+        // __androidx_security_crypto_encrypted_file_keyset__)) for every
+        // instance in the process. With two EncryptedFiles wrapping different
+        // master keys (this vault key + the profile-store master key in
+        // EncryptedProfileStore), whoever inits first writes a DEK under
+        // their master, then the second one reads back that DEK and tries
+        // to unwrap it with the WRONG master — Cipher.doFinal throws
+        // AEADBadTagException / KeyStoreException VERIFICATION_FAILED.
+        private const val KEYSET_PREF_NAME = "__crdp_vault_keyset_pref__"
+        private const val KEYSET_ALIAS = "__crdp_vault_keyset__"
     }
 
     private val masterKey: MasterKey by lazy { buildMasterKey() }
@@ -58,7 +69,10 @@ internal class DeviceKeyVaultCrypto(
         target,
         masterKey,
         EncryptedFile.FileEncryptionScheme.AES256_GCM_HKDF_4KB,
-    ).build()
+    )
+        .setKeysetPrefName(KEYSET_PREF_NAME)
+        .setKeysetAlias(KEYSET_ALIAS)
+        .build()
 
     override suspend fun read(): String? = withContext(Dispatchers.IO) {
         if (!target.exists()) return@withContext null

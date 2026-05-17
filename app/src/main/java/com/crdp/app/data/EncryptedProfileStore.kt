@@ -32,6 +32,18 @@ internal class EncryptedProfileStore(context: Context) {
 
     private val mutex = Mutex()
 
+    private companion object {
+        // Per-store Tink keyset slot. Tink stores the data-encryption key in a
+        // SharedPreferences slot identified by (prefName, alias). The defaults
+        // are shared across every EncryptedFile in the app, so two EncryptedFile
+        // instances built with different MasterKey aliases would stomp each
+        // other and crash on the second-to-init's first read/write with
+        // AEADBadTagException — the persisted DEK was wrapped by the OTHER
+        // master key. Scope these names to this store.
+        const val KEYSET_PREF_NAME = "__crdp_profile_store_keyset_pref__"
+        const val KEYSET_ALIAS = "__crdp_profile_store_keyset__"
+    }
+
     suspend fun readAll(): String? = mutex.withLock {
         withContext(Dispatchers.IO) {
             if (!storeFile.exists()) return@withContext null
@@ -61,5 +73,8 @@ internal class EncryptedProfileStore(context: Context) {
         target,
         masterKey,
         EncryptedFile.FileEncryptionScheme.AES256_GCM_HKDF_4KB,
-    ).build()
+    )
+        .setKeysetPrefName(KEYSET_PREF_NAME)
+        .setKeysetAlias(KEYSET_ALIAS)
+        .build()
 }

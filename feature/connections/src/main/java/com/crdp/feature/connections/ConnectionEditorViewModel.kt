@@ -11,6 +11,7 @@ import com.crdp.core.rdp.model.DirectConnectionProfile
 import com.crdp.core.rdp.model.GatewayConnectionProfile
 import com.crdp.core.rdp.model.VaultEntry
 import com.crdp.core.rdp.repository.ProfileRepository
+import com.crdp.core.rdp.repository.VaultOpResult
 import com.crdp.core.rdp.repository.VaultRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -147,13 +148,19 @@ class ConnectionEditorViewModel @Inject constructor(
 
     /**
      * Persist [entry] (assigning an id when blank) and immediately link it to the
-     * current editor state. Invoked from the "Add new credential" inline dialog.
+     * current editor state. Invoked from the "Add new credential" inline dialog
+     * AFTER the caller has gated the write through [com.crdp.core.ui.vault.VaultGatekeeper].
+     * Only links the entry to the profile draft on a confirmed write — a Locked
+     * or Failed result no longer silently strands a `vaultEntryId` pointing at
+     * a credential that doesn't actually exist on disk.
      */
     fun saveAndSelectVaultEntry(entry: VaultEntry) {
         viewModelScope.launch {
             val finalId = entry.id.ifBlank { UUID.randomUUID().toString() }
-            vaultRepository.upsert(entry.copy(id = finalId))
-            _state.update { it.copy(vaultEntryId = finalId) }
+            val result = vaultRepository.upsert(entry.copy(id = finalId))
+            if (result == VaultOpResult.Success) {
+                _state.update { it.copy(vaultEntryId = finalId) }
+            }
         }
     }
 

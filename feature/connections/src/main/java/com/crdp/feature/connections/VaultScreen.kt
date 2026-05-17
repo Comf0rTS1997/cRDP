@@ -39,6 +39,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -49,6 +50,8 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.crdp.core.rdp.model.VaultEntry
+import com.crdp.core.ui.vault.LocalVaultGatekeeper
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -59,6 +62,35 @@ fun VaultRoute(
     val entries by viewModel.entries.collectAsStateWithLifecycle()
     var editing by remember { mutableStateOf<VaultEntry?>(null) }
     var creating by remember { mutableStateOf(false) }
+    val gatekeeper = LocalVaultGatekeeper.current
+    val scope = rememberCoroutineScope()
+
+    // Vault writes always pass through the single gatekeeper. Even though this
+    // screen is wrapped in VaultGate (so reaching it required a recent unlock),
+    // the in-Compose auto-lock timer can fire mid-screen — without re-checking,
+    // a save typed after that point would silently no-op as VaultOpResult.Locked.
+    fun guardedUpsert(entry: VaultEntry) {
+        scope.launch {
+            if (gatekeeper.ensureUnlocked(
+                    title = "Unlock vault",
+                    subtitle = "Authenticate to save this credential",
+                )
+            ) {
+                viewModel.upsert(entry)
+            }
+        }
+    }
+    fun guardedDelete(id: String) {
+        scope.launch {
+            if (gatekeeper.ensureUnlocked(
+                    title = "Unlock vault",
+                    subtitle = "Authenticate to delete this credential",
+                )
+            ) {
+                viewModel.delete(id)
+            }
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -111,7 +143,7 @@ fun VaultRoute(
                     EntryItem(
                         entry = entry,
                         onEdit = { editing = entry },
-                        onDelete = { viewModel.delete(entry.id) },
+                        onDelete = { guardedDelete(entry.id) },
                     )
                     HorizontalDivider(modifier = Modifier.padding(start = 72.dp))
                 }
@@ -124,7 +156,7 @@ fun VaultRoute(
             initial = null,
             onCancel = { creating = false },
             onSave = { e ->
-                viewModel.upsert(e)
+                guardedUpsert(e)
                 creating = false
             },
         )
@@ -135,7 +167,7 @@ fun VaultRoute(
             initial = current,
             onCancel = { editing = null },
             onSave = { e ->
-                viewModel.upsert(e)
+                guardedUpsert(e)
                 editing = null
             },
         )

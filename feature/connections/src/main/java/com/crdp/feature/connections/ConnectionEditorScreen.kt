@@ -39,6 +39,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,6 +52,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.crdp.core.rdp.model.AudioMode
 import com.crdp.core.rdp.model.AudioQuality
+import com.crdp.core.ui.vault.LocalVaultGatekeeper
+import kotlinx.coroutines.launch
 
 /**
  * App-level defaults applied to a brand-new profile on first composition. Used
@@ -539,6 +542,9 @@ private fun VaultEntryPicker(
 ) {
     var expanded by remember { mutableStateOf(false) }
     var creating by remember { mutableStateOf(false) }
+    var saveError by remember { mutableStateOf<String?>(null) }
+    val gatekeeper = LocalVaultGatekeeper.current
+    val scope = rememberCoroutineScope()
 
     val selected = entries.firstOrNull { it.id == selectedId }
     val label = when {
@@ -625,9 +631,40 @@ private fun VaultEntryPicker(
             initial = null,
             onCancel = { creating = false },
             onSave = { entry ->
-                onCreateNew(entry)
-                creating = false
+                // Vault writes go through the single gatekeeper. For encrypted
+                // protections (DeviceKey / Password) that aren't already
+                // unlocked, this shows the biometric / password prompt and
+                // only proceeds with the upsert on success. Without this the
+                // editor would silently no-op a locked write — VaultRepository
+                // returns VaultOpResult.Locked, and the user just sees the
+                // credential vanish when they reopen the editor.
+                scope.launch {
+                    if (gatekeeper.ensureUnlocked(
+                            title = "Unlock vault",
+                            subtitle = "Authenticate to save this credential",
+                        )
+                    ) {
+                        saveError = null
+                        onCreateNew(entry)
+                        creating = false
+                    } else {
+                        saveError = "Vault is locked — credential not saved."
+                    }
+                }
             },
+        )
+    }
+
+    if (saveError != null) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { saveError = null },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = { saveError = null }) {
+                    Text("OK")
+                }
+            },
+            title = { Text("Credential not saved") },
+            text = { Text(saveError!!) },
         )
     }
 }

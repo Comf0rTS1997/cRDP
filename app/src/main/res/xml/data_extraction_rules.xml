@@ -5,6 +5,15 @@
   AndroidKeystore-backed MasterKey on the original device, so a copy in a
   backup is useless; the plaintext mode would otherwise leak credentials.
   Either way, this file never needs to leave the device.
+
+  We must also exclude the Tink keyset SharedPreferences. Tink stores the
+  data-encryption key (the one that actually encrypts crdp_vault.json /
+  crdp_profiles_enc.json) inside this prefs file, wrapped at rest by the
+  AndroidKeystore master key. Keystore keys are NEVER backed up, but
+  SharedPreferences ARE — so if this prefs file gets restored on reinstall
+  without the matching master key (or with a corrupted blob from an older
+  broken build), every read fails with KeyStoreException: VERIFICATION_FAILED
+  / AEADBadTagException and saved passwords silently disappear.
 -->
 <data-extraction-rules>
     <cloud-backup>
@@ -12,11 +21,15 @@
         <exclude domain="file" path="crdp_vault.json.tmp" />
         <exclude domain="file" path="crdp_profiles_enc.json" />
         <exclude domain="file" path="crdp_profiles_enc.json.tmp" />
+        <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_file_pref__.xml" />
+        <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_file_keyset__.xml" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="file" path="crdp_vault.json" />
         <exclude domain="file" path="crdp_vault.json.tmp" />
         <exclude domain="file" path="crdp_profiles_enc.json" />
         <exclude domain="file" path="crdp_profiles_enc.json.tmp" />
+        <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_file_pref__.xml" />
+        <exclude domain="sharedpref" path="__androidx_security_crypto_encrypted_file_keyset__.xml" />
     </device-transfer>
 </data-extraction-rules>

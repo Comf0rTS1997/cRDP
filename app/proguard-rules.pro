@@ -14,6 +14,11 @@
 -keep class com.crdp.engine.afreerdp.** { *; }
 -keep class com.crdp.core.rdp.** { *; }
 -keep class com.crdp.rdp.direct.** { *; }
+# FreeRDP JNI bridge: FQN (com.freerdp.freerdpcore.services.LibFreeRDP) and the
+# OnXxx/AdapterCallbacks members are resolved by name from libfreerdp-android.so.
+# Keeping the whole package also prevents R8 from making LibFreeRDP effectively
+# abstract (private ctor never called from kept code), which crashed JNI_OnLoad.
+-keep class com.freerdp.freerdpcore.** { *; }
 
 # --- kotlinx.serialization ------------------------------------------------
 -keepattributes *Annotation*, InnerClasses
@@ -47,5 +52,15 @@
 # --- DataStore proto/preferences-related reflection ----------------------
 -keep class androidx.datastore.*.** { *; }
 
-# --- Tink (security-crypto) references errorprone annotations at compile time only.
+# --- Tink (security-crypto) ----------------------------------------------
+# androidx.security:security-crypto bundles Tink. Tink (de)serializes keysets
+# via reflection on its shaded-protobuf classes; if R8 strips them the keyset
+# round-trips corrupted and AES-GCM finish fails with KM_ERROR_VERIFICATION_FAILED,
+# silently breaking EncryptedFile/MasterKey writes/reads (lost profiles/passwords).
+-keep class com.google.crypto.tink.** { *; }
+-keepclassmembers class com.google.crypto.tink.** { *; }
+-keep class androidx.security.crypto.** { *; }
+-keepclassmembers class androidx.security.crypto.** { *; }
+-dontwarn com.google.crypto.tink.**
 -dontwarn com.google.errorprone.annotations.**
+-dontwarn org.conscrypt.**

@@ -41,10 +41,11 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import androidx.compose.runtime.CompositionLocalProvider
 import com.crdp.core.rdp.model.VaultProtection
 import com.crdp.core.rdp.repository.UnlockOutcome
-import com.crdp.core.ui.biometric.BiometricPrompter
-import com.crdp.core.ui.biometric.BiometricResult
+import com.crdp.core.ui.vault.LocalVaultGatekeeper
+import com.crdp.core.ui.vault.VaultGatekeeper
 import kotlinx.coroutines.CompletableDeferred
 import com.crdp.core.ui.theme.CrdpTheme
 import com.crdp.feature.connections.ConnectionDetailsRoute
@@ -92,70 +93,24 @@ private fun resolveNewProfileDefaults(setting: String): NewProfileDefaults {
 }
 
 /**
- * Connect-time vault gate. Runs ONE of three paths depending on
- * [vaultProtection]:
- *
- *  - [VaultProtection.None]: no gate. User chose plaintext, no auth involved.
- *  - [VaultProtection.DeviceKey]: BiometricPrompt → after success, trigger the
- *    repo unlock so subsequent reads through the auth-bound master key
- *    succeed. Because the Keystore validity window is wider than a single
- *    prompt, repeated connects within the window don't actually require a
- *    fresh prompt — but we keep the prompt for "intent to connect" UX.
- *  - [VaultProtection.Password]: if we already have a cached derived key
- *    (vault was unlocked earlier in this process) we skip; otherwise show an
- *    inline password dialog via [requestPassword].
- *
- * Profiles that don't reference a vault entry skip the gate entirely — there's
- * nothing to decrypt for them. Returns true to proceed with the connect.
+ * Connect-time vault gate. Skips the prompt for profiles that don't reference
+ * a vault entry (nothing to decrypt) and otherwise hands off to the
+ * centralized [VaultGatekeeper] so the auth UX matches every other place that
+ * touches the vault (editor credential save, vault settings, future flows).
  */
 private suspend fun unlockVaultForProfile(
     mainViewModel: MainViewModel,
-    context: android.content.Context,
+    gatekeeper: VaultGatekeeper,
     profileId: String,
-    vaultProtection: VaultProtection,
     notifyPromptOnPhone: Boolean,
-    requestPassword: suspend () -> CharArray?,
 ): Boolean {
     val profile = mainViewModel.getProfile(profileId) ?: return true
-    if (vaultProtection == VaultProtection.None) return true
     if (!mainViewModel.referencesVaultCredentials(profile)) return true
-    val activity = context as? FragmentActivity ?: return false
-
-    return when (vaultProtection) {
-        VaultProtection.None -> true
-        VaultProtection.DeviceKey -> {
-            // In expanded-window (tablet / DeX-on-external-display) mode the
-            // system biometric prompt renders on the phone's built-in screen,
-            // not the external display the user is looking at. Toast so they
-            // know where to look.
-            if (notifyPromptOnPhone) {
-                android.widget.Toast.makeText(
-                    context,
-                    "Check your phone to confirm fingerprint / device verification",
-                    android.widget.Toast.LENGTH_LONG,
-                ).show()
-            }
-            val result = BiometricPrompter.prompt(
-                activity = activity,
-                title = "Unlock vault",
-                subtitle = profile.displayName,
-            )
-            if (result !is BiometricResult.Success) return false
-            // The prompt only widens the Keystore validity window. Drive the
-            // repository read so subsequent profile-resolve calls find the
-            // entry in cache.
-            mainViewModel.completeDeviceKeyUnlock() == UnlockOutcome.Success
-        }
-        VaultProtection.Password -> {
-            // Password mode caches the derived key in-process; if the user
-            // already unlocked the vault via the Vault screen, we don't need
-            // to re-prompt at connect time.
-            if (mainViewModel.vaultStatus.value.unlocked) return true
-            val pw = requestPassword() ?: return false
-            val outcome = mainViewModel.unlockWithPassword(pw)
-            outcome == UnlockOutcome.Success
-        }
-    }
+    return gatekeeper.ensureUnlocked(
+        title = "Unlock vault",
+        subtitle = profile.displayName,
+        notifyPromptOnPhone = notifyPromptOnPhone,
+    )
 }
 
 @AndroidEntryPoint
@@ -321,13 +276,33 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                     result
                 }
 
+                // Single source of truth for "ask the user to unlock the vault".
+                // Constructed inside setContent so it can close over the activity,
+                // the password-dialog deferred, and the MainViewModel. Provided to
+                // descendants via [LocalVaultGatekeeper] so feature modules don't
+                // re-implement BiometricPrompt / password dialog wiring.
+                val vaultGatekeeper = remember(mainViewModel) {
+                    AppVaultGatekeeper(
+                        activity = this@MainActivity,
+                        getProtection = { mainViewModel.appSettings.value.vaultProtection },
+                        isUnlocked = {
+                            mainViewModel.isVaultUnlocked(
+                                mainViewModel.appSettings.value.autoLockVaultMinutes,
+                            )
+                        },
+                        completeDeviceKeyUnlock = { mainViewModel.completeDeviceKeyUnlock() },
+                        unlockWithPassword = { pw -> mainViewModel.unlockWithPassword(pw) },
+                        requestPassword = requestPassword,
+                    )
+                }
+
                 fun connectWithBiometric(profileId: String) {
                     coroutineScope.launch {
                         if (unlockVaultForProfile(
-                                mainViewModel, context, profileId,
-                                appSettings.vaultProtection,
+                                mainViewModel = mainViewModel,
+                                gatekeeper = vaultGatekeeper,
+                                profileId = profileId,
                                 notifyPromptOnPhone = expandedWindow,
-                                requestPassword = requestPassword,
                             )
                         ) {
                             navController.navigate("session/${Uri.encode(profileId)}")
@@ -343,6 +318,7 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                     )
                 }
 
+                CompositionLocalProvider(LocalVaultGatekeeper provides vaultGatekeeper) {
                 Scaffold(
                     modifier = Modifier.fillMaxSize(),
                     containerColor = MaterialTheme.colorScheme.background,
@@ -627,6 +603,7 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                         }
                     }
                   }
+                }
                 }
             }
         }

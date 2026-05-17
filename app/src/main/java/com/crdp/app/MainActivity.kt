@@ -13,23 +13,39 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.crdp.core.rdp.model.VaultProtection
+import com.crdp.core.rdp.repository.UnlockOutcome
 import com.crdp.core.ui.biometric.BiometricPrompter
 import com.crdp.core.ui.biometric.BiometricResult
+import kotlinx.coroutines.CompletableDeferred
 import com.crdp.core.ui.theme.CrdpTheme
 import com.crdp.feature.connections.ConnectionDetailsRoute
 import com.crdp.feature.connections.ConnectionDetailsViewModel
@@ -41,6 +57,7 @@ import com.crdp.feature.connections.ConnectionListViewModel
 import com.crdp.feature.connections.ConnectionViewMode
 import com.crdp.feature.connections.ConnectionsTwoPaneRoute
 import com.crdp.feature.connections.VaultRoute
+import com.crdp.app.prefs.AutoLockVault
 import com.crdp.app.prefs.CameraModes
 import com.crdp.app.prefs.ConnectionViewModes
 import com.crdp.app.prefs.KeyboardLayouts
@@ -74,38 +91,71 @@ private fun resolveNewProfileDefaults(setting: String): NewProfileDefaults {
     return NewProfileDefaults(autoResolution = false, width = w, height = h)
 }
 
-private suspend fun verifyBiometricForProfile(
+/**
+ * Connect-time vault gate. Runs ONE of three paths depending on
+ * [vaultProtection]:
+ *
+ *  - [VaultProtection.None]: no gate. User chose plaintext, no auth involved.
+ *  - [VaultProtection.DeviceKey]: BiometricPrompt → after success, trigger the
+ *    repo unlock so subsequent reads through the auth-bound master key
+ *    succeed. Because the Keystore validity window is wider than a single
+ *    prompt, repeated connects within the window don't actually require a
+ *    fresh prompt — but we keep the prompt for "intent to connect" UX.
+ *  - [VaultProtection.Password]: if we already have a cached derived key
+ *    (vault was unlocked earlier in this process) we skip; otherwise show an
+ *    inline password dialog via [requestPassword].
+ *
+ * Profiles that don't reference a vault entry skip the gate entirely — there's
+ * nothing to decrypt for them. Returns true to proceed with the connect.
+ */
+private suspend fun unlockVaultForProfile(
     mainViewModel: MainViewModel,
     context: android.content.Context,
     profileId: String,
-    vaultEncryption: Boolean,
+    vaultProtection: VaultProtection,
     notifyPromptOnPhone: Boolean,
+    requestPassword: suspend () -> CharArray?,
 ): Boolean {
     val profile = mainViewModel.getProfile(profileId) ?: return true
-    // Single global gate: only prompt when (a) vault encryption is enabled AND
-    // (b) the profile actually references vault credentials that we'd be unlocking.
-    // No vault link → nothing to gate. Vault encryption off → user opted into
-    // plaintext storage, so no UI auth check either.
-    if (!vaultEncryption) return true
+    if (vaultProtection == VaultProtection.None) return true
     if (!mainViewModel.referencesVaultCredentials(profile)) return true
     val activity = context as? FragmentActivity ?: return false
-    // In expanded-window (tablet / DeX-on-external-display) mode the system
-    // biometric prompt is rendered on the phone's built-in screen, not on the
-    // external display the user is looking at. Surface a toast so they know
-    // where to look.
-    if (notifyPromptOnPhone) {
-        android.widget.Toast.makeText(
-            context,
-            "Check your phone to confirm fingerprint / device verification",
-            android.widget.Toast.LENGTH_LONG,
-        ).show()
+
+    return when (vaultProtection) {
+        VaultProtection.None -> true
+        VaultProtection.DeviceKey -> {
+            // In expanded-window (tablet / DeX-on-external-display) mode the
+            // system biometric prompt renders on the phone's built-in screen,
+            // not the external display the user is looking at. Toast so they
+            // know where to look.
+            if (notifyPromptOnPhone) {
+                android.widget.Toast.makeText(
+                    context,
+                    "Check your phone to confirm fingerprint / device verification",
+                    android.widget.Toast.LENGTH_LONG,
+                ).show()
+            }
+            val result = BiometricPrompter.prompt(
+                activity = activity,
+                title = "Unlock vault",
+                subtitle = profile.displayName,
+            )
+            if (result !is BiometricResult.Success) return false
+            // The prompt only widens the Keystore validity window. Drive the
+            // repository read so subsequent profile-resolve calls find the
+            // entry in cache.
+            mainViewModel.completeDeviceKeyUnlock() == UnlockOutcome.Success
+        }
+        VaultProtection.Password -> {
+            // Password mode caches the derived key in-process; if the user
+            // already unlocked the vault via the Vault screen, we don't need
+            // to re-prompt at connect time.
+            if (mainViewModel.vaultStatus.value.unlocked) return true
+            val pw = requestPassword() ?: return false
+            val outcome = mainViewModel.unlockWithPassword(pw)
+            outcome == UnlockOutcome.Success
+        }
     }
-    val result = BiometricPrompter.prompt(
-        activity = activity,
-        title = "Unlock vault",
-        subtitle = profile.displayName,
-    )
-    return result is BiometricResult.Success
 }
 
 @AndroidEntryPoint
@@ -234,18 +284,50 @@ class MainActivity : FragmentActivity(), KeyEventHost {
             val dynamicColor by mainViewModel.dynamicColor.collectAsStateWithLifecycle()
             val appSettings by mainViewModel.appSettings.collectAsStateWithLifecycle()
 
+            // Re-engage the vault gate whenever the app leaves the foreground, unless
+            // the user picked "Never". The in-Compose timer handles in-app idling;
+            // this covers the case where the user backgrounds the app for longer than
+            // the auto-lock window.
+            val lifecycleOwner = LocalLifecycleOwner.current
+            DisposableEffect(lifecycleOwner, appSettings.autoLockVaultMinutes) {
+                val observer = LifecycleEventObserver { _, event ->
+                    if (event == Lifecycle.Event.ON_STOP &&
+                        appSettings.autoLockVaultMinutes != AutoLockVault.NEVER) {
+                        mainViewModel.lockVault()
+                    }
+                }
+                lifecycleOwner.lifecycle.addObserver(observer)
+                onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+            }
+
             CrdpTheme(darkTheme = isSystemInDarkTheme(), dynamicColor = dynamicColor) {
                 val navController = rememberNavController()
                 val coroutineScope = rememberCoroutineScope()
                 val context = LocalContext.current
                 val expandedWindow = isExpandedWindow()
 
+                // Compose-state-backed password prompt: when a connect path needs
+                // a vault password and there's no cached key, it parks a deferred
+                // here and awaits user input. The dialog below resolves the
+                // deferred with the typed password (or null on cancel).
+                var pendingPasswordRequest by remember {
+                    mutableStateOf<CompletableDeferred<CharArray?>?>(null)
+                }
+                val requestPassword: suspend () -> CharArray? = {
+                    val deferred = CompletableDeferred<CharArray?>()
+                    pendingPasswordRequest = deferred
+                    val result = deferred.await()
+                    pendingPasswordRequest = null
+                    result
+                }
+
                 fun connectWithBiometric(profileId: String) {
                     coroutineScope.launch {
-                        if (verifyBiometricForProfile(
+                        if (unlockVaultForProfile(
                                 mainViewModel, context, profileId,
-                                appSettings.vaultEncryption,
+                                appSettings.vaultProtection,
                                 notifyPromptOnPhone = expandedWindow,
+                                requestPassword = requestPassword,
                             )
                         ) {
                             navController.navigate("session/${Uri.encode(profileId)}")
@@ -255,10 +337,11 @@ class MainActivity : FragmentActivity(), KeyEventHost {
 
                 fun saveAndConnectWithBiometric(profileId: String) {
                     coroutineScope.launch {
-                        if (verifyBiometricForProfile(
+                        if (unlockVaultForProfile(
                                 mainViewModel, context, profileId,
-                                appSettings.vaultEncryption,
+                                appSettings.vaultProtection,
                                 notifyPromptOnPhone = expandedWindow,
+                                requestPassword = requestPassword,
                             )
                         ) {
                             navController.navigate("session/${Uri.encode(profileId)}") {
@@ -266,6 +349,14 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                             }
                         }
                     }
+                }
+
+                val activePasswordRequest = pendingPasswordRequest
+                if (activePasswordRequest != null) {
+                    ConnectVaultPasswordDialog(
+                        onCancel = { activePasswordRequest.complete(null) },
+                        onConfirm = { pw -> activePasswordRequest.complete(pw) },
+                    )
                 }
 
                 Scaffold(
@@ -351,6 +442,8 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                                 ) + fadeOut(animationSpec = tween(durationMillis = 300))
                             },
                         ) {
+                            val deviceKeySupported by mainViewModel.deviceKeySupported.collectAsStateWithLifecycle()
+                            val vaultProtectionResult by mainViewModel.vaultProtectionResult.collectAsStateWithLifecycle()
                             SettingsScreen(
                                 dynamicColor = dynamicColor,
                                 onDynamicColor = mainViewModel::setDynamicColor,
@@ -358,7 +451,12 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                                 onTouchAsMouse = mainViewModel::setTouchAsMouse,
                                 onHapticFeedback = mainViewModel::setHapticFeedback,
                                 onOpenKeyboardRow = { navController.navigate("settings/keyboard-row") },
-                                onVaultEncryption = mainViewModel::setVaultEncryption,
+                                onOpenMouseSettings = { navController.navigate("settings/mouse") },
+                                onVaultProtectionChange = { target, pw ->
+                                    mainViewModel.requestVaultProtection(target, pw)
+                                },
+                                vaultProtectionResult = vaultProtectionResult,
+                                deviceKeySupported = deviceKeySupported,
                                 onAutoDisconnectIdle = mainViewModel::setAutoDisconnectIdle,
                                 onDefaultResolution = mainViewModel::setDefaultResolution,
                                 onKeyboardLayout = mainViewModel::setKeyboardLayout,
@@ -390,6 +488,21 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                             KeyboardRowSettingsScreen(
                                 enabled = appSettings.auxKeyRowKeys,
                                 onToggle = mainViewModel::setAuxKeyRowKey,
+                                onBack = { navController.popBackStack() },
+                            )
+                        }
+                        composable(
+                            route = "settings/mouse",
+                            enterTransition = { EnterTransition.None },
+                            exitTransition = { ExitTransition.None },
+                            popEnterTransition = { EnterTransition.None },
+                            popExitTransition = { ExitTransition.None },
+                        ) {
+                            MouseSettingsScreen(
+                                appSettings = appSettings,
+                                onReverseScroll = mainViewModel::setReverseScroll,
+                                onMouseWheelSpeed = mainViewModel::setMouseWheelSpeed,
+                                onTouchpadScrollSpeed = mainViewModel::setTouchpadScrollSpeed,
                                 onBack = { navController.popBackStack() },
                             )
                         }
@@ -464,6 +577,9 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                                 settings = SessionUserSettings(
                                     hapticFeedback = appSettings.hapticFeedback,
                                     touchAsMouse = appSettings.touchAsMouse,
+                                    reverseScroll = appSettings.reverseScroll,
+                                    mouseWheelSpeedPercent = appSettings.mouseWheelSpeed,
+                                    touchpadScrollSpeedPercent = appSettings.touchpadScrollSpeed,
                                     autoDisconnectIdle = appSettings.autoDisconnectIdle,
                                     renderOptions = RenderOptions(
                                         backend = when (appSettings.renderBackend) {
@@ -520,6 +636,7 @@ class MainActivity : FragmentActivity(), KeyEventHost {
         private const val POST_NOTIFICATIONS_REQUEST_CODE = 7041
     }
 
+
     /**
      * Ask for POST_NOTIFICATIONS on first launch (Android 13+). Without this
      * the PrinterSpoolWatcher's "Print job spooled" notifications are silently
@@ -541,4 +658,55 @@ class MainActivity : FragmentActivity(), KeyEventHost {
             POST_NOTIFICATIONS_REQUEST_CODE,
         )
     }
+}
+
+/**
+ * Compact password dialog used at connect time when the vault is in
+ * [VaultProtection.Password] mode and no derived key is cached yet. Returns
+ * the typed password to the caller via [onConfirm]; the caller is responsible
+ * for forwarding it to the repo and zeroing the array.
+ */
+@Composable
+private fun ConnectVaultPasswordDialog(
+    onCancel: () -> Unit,
+    onConfirm: (CharArray) -> Unit,
+) {
+    var password by remember { mutableStateOf("") }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onCancel,
+        title = { androidx.compose.material3.Text("Unlock vault") },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                androidx.compose.material3.Text(
+                    text = "Enter your vault password to load saved credentials for this connection.",
+                    style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
+                    color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                androidx.compose.material3.OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { androidx.compose.material3.Text("Password") },
+                    singleLine = true,
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(
+                enabled = password.isNotEmpty(),
+                onClick = {
+                    val out = password.toCharArray()
+                    password = ""
+                    onConfirm(out)
+                },
+            ) { androidx.compose.material3.Text("Unlock") }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = onCancel) {
+                androidx.compose.material3.Text("Cancel")
+            }
+        },
+    )
 }

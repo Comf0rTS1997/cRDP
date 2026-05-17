@@ -1,55 +1,51 @@
 package com.crdp.app
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.crdp.app.data.VaultEncryptionState
+import com.crdp.app.data.vault.DeviceKeySupport
 import com.crdp.app.prefs.AppSettings
 import com.crdp.app.prefs.AutoLockVault
 import com.crdp.app.prefs.UserPreferencesRepository
 import com.crdp.core.rdp.model.ConnectionProfile
 import com.crdp.core.rdp.model.DirectConnectionProfile
-import com.crdp.core.rdp.model.GatewayConnectionProfile
+import com.crdp.core.rdp.model.VaultProtection
 import com.crdp.core.rdp.repository.ProfileRepository
+import com.crdp.core.rdp.repository.SetProtectionOutcome
+import com.crdp.core.rdp.repository.UnlockOutcome
 import com.crdp.core.rdp.repository.VaultRepository
-import kotlinx.coroutines.flow.first
+import com.crdp.core.rdp.repository.VaultStatus
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 @HiltViewModel
 class MainViewModel @Inject constructor(
+    @ApplicationContext private val appContext: Context,
     private val userPreferencesRepository: UserPreferencesRepository,
     private val profileRepository: ProfileRepository,
     private val vaultRepository: VaultRepository,
-    private val vaultEncryptionState: VaultEncryptionState,
 ) : ViewModel() {
-
-    init {
-        // The repository singleton needs the on-disk mode the moment any read happens.
-        // Hilt has already constructed prefs, but the encryption flag lives in DataStore
-        // (suspend), so seed the volatile mirror once on startup before any vault I/O.
-        viewModelScope.launch {
-            vaultEncryptionState.encrypted =
-                userPreferencesRepository.appSettings.first().vaultEncryption
-        }
-    }
 
     suspend fun getProfile(id: String): ConnectionProfile? = profileRepository.getById(id)
 
     /**
-     * True when the connection references a vault entry that holds credentials — the
-     * only case where the UI biometric gate actually has something to guard. Profiles
-     * with no vault link (gateway, or direct without saved credentials) skip the prompt.
+     * True when the connection points at a vault entry — i.e. credentials live
+     * in the (potentially locked) vault rather than inline on the profile. The
+     * UI uses this to decide whether opening the session needs a vault unlock
+     * first. Returns false for gateway profiles and direct profiles that have
+     * no vault reference.
      */
-    suspend fun referencesVaultCredentials(profile: ConnectionProfile): Boolean {
+    fun referencesVaultCredentials(profile: ConnectionProfile): Boolean {
         if (profile !is DirectConnectionProfile) return false
-        val entryId = profile.vaultEntryId ?: return false
-        val entry = vaultRepository.getById(entryId) ?: return false
-        return entry.password.isNotEmpty() || entry.username.isNotEmpty()
+        return profile.vaultEntryId != null
     }
 
     val dynamicColor = userPreferencesRepository.dynamicColor.stateIn(
@@ -64,6 +60,12 @@ class MainViewModel @Inject constructor(
         initialValue = AppSettings(),
     )
 
+    val vaultStatus: kotlinx.coroutines.flow.StateFlow<VaultStatus> = vaultRepository.status.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = VaultStatus(VaultProtection.DeviceKey, unlocked = false, hasData = false),
+    )
+
     fun setDynamicColor(enabled: Boolean) {
         viewModelScope.launch { userPreferencesRepository.setDynamicColor(enabled) }
     }
@@ -74,6 +76,18 @@ class MainViewModel @Inject constructor(
 
     fun setHapticFeedback(value: Boolean) {
         viewModelScope.launch { userPreferencesRepository.setHapticFeedback(value) }
+    }
+
+    fun setReverseScroll(value: Boolean) {
+        viewModelScope.launch { userPreferencesRepository.setReverseScroll(value) }
+    }
+
+    fun setMouseWheelSpeed(value: Int) {
+        viewModelScope.launch { userPreferencesRepository.setMouseWheelSpeed(value) }
+    }
+
+    fun setTouchpadScrollSpeed(value: Int) {
+        viewModelScope.launch { userPreferencesRepository.setTouchpadScrollSpeed(value) }
     }
 
     fun setAutoDisconnectIdle(value: Boolean) {
@@ -149,16 +163,59 @@ class MainViewModel @Inject constructor(
     }
 
     /**
-     * Persists the new global vault-encryption preference AND rewrites the on-disk
-     * vault file in the matching format. When toggling off, entries become plaintext
-     * JSON; toggling back on re-wraps them in EncryptedFile.
+     * Asynchronously probes whether the device can actually host an
+     * auth-bound Keystore key. Off the main thread because the probe does a
+     * Keystore round-trip. The result drives whether the settings UI offers
+     * DeviceKey mode or steers the user toward Password.
      */
-    fun setVaultEncryption(value: Boolean) {
+    private val _deviceKeySupported = MutableStateFlow<Boolean?>(null)
+    val deviceKeySupported = _deviceKeySupported.asStateFlow()
+
+    init {
         viewModelScope.launch {
-            userPreferencesRepository.setVaultEncryption(value)
-            vaultRepository.setEncryption(value)
-            vaultEncryptionState.encrypted = value
+            _deviceKeySupported.value = withContext(Dispatchers.IO) {
+                DeviceKeySupport.canHostAuthBoundKey(appContext)
+            }
         }
+    }
+
+    private val _vaultProtectionResult = MutableStateFlow<SetProtectionOutcome?>(null)
+    val vaultProtectionResult = _vaultProtectionResult.asStateFlow()
+
+    /**
+     * Switch the vault to a new protection mode and broadcast the outcome via
+     * [vaultProtectionResult] so the settings screen can render an inline
+     * error without needing a return value. The vault must already be unlocked
+     * under the current mode; the repo refuses re-encryption otherwise.
+     * [password] is required for [VaultProtection.Password] and is zeroed by
+     * the repo regardless of outcome.
+     */
+    fun requestVaultProtection(target: VaultProtection, password: CharArray? = null) {
+        viewModelScope.launch {
+            _vaultProtectionResult.value = vaultRepository.setProtection(target, password)
+        }
+    }
+
+    fun acknowledgeVaultProtectionResult() {
+        _vaultProtectionResult.value = null
+    }
+
+    /**
+     * Called after a successful biometric prompt. Triggers the actual vault
+     * read under the auth-bound master key — the prompt itself only widened
+     * the Keystore validity window; we have to do a real crypto op to confirm
+     * the key works and pull entries into cache.
+     */
+    suspend fun completeDeviceKeyUnlock(): UnlockOutcome {
+        val outcome = vaultRepository.tryUnlockWithDeviceKey()
+        if (outcome == UnlockOutcome.Success) markVaultUnlocked()
+        return outcome
+    }
+
+    suspend fun unlockWithPassword(password: CharArray): UnlockOutcome {
+        val outcome = vaultRepository.tryUnlockWithPassword(password)
+        if (outcome == UnlockOutcome.Success) markVaultUnlocked()
+        return outcome
     }
 
     fun setAuxKeyRowKey(id: String, enabled: Boolean) {
@@ -169,6 +226,8 @@ class MainViewModel @Inject constructor(
     val vaultUnlockedAt = _vaultUnlockedAt.asStateFlow()
 
     fun isVaultUnlocked(autoLockMinutes: Int, nowMs: Long = System.currentTimeMillis()): Boolean {
+        // For an unprotected vault there's nothing to gate.
+        if (vaultStatus.value.protection == VaultProtection.None) return true
         val unlockedAt = _vaultUnlockedAt.value ?: return false
         return when (autoLockMinutes) {
             AutoLockVault.NEVER -> true
@@ -183,5 +242,6 @@ class MainViewModel @Inject constructor(
 
     fun lockVault() {
         _vaultUnlockedAt.value = null
+        viewModelScope.launch { vaultRepository.lock() }
     }
 }

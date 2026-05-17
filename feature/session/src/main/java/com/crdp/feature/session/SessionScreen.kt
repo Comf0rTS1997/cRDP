@@ -147,6 +147,16 @@ fun computeRdpTransform(sw: Int, sh: Int, rw: Int, rh: Int): RdpTransform {
 data class SessionUserSettings(
     val hapticFeedback: Boolean = true,
     val touchAsMouse: Boolean = true,
+    /**
+     * Sign-flip wheel deltas for both physical mouse-wheel events and
+     * two-finger touchpad scroll. Mirrors the "natural scrolling" toggle on
+     * macOS/Windows.
+     */
+    val reverseScroll: Boolean = false,
+    /** Percent multiplier applied to physical mouse wheel deltas. 100 = unchanged. */
+    val mouseWheelSpeedPercent: Int = 100,
+    /** Percent multiplier for two-finger touchpad scroll sensitivity. 100 = unchanged. */
+    val touchpadScrollSpeedPercent: Int = 100,
     val autoDisconnectIdle: Boolean = false,
     val renderOptions: com.crdp.core.rdp.engine.RenderOptions = com.crdp.core.rdp.engine.RenderOptions(),
     /** App-wide default DPI percent (100..500) when the profile doesn't override. */
@@ -487,12 +497,30 @@ private fun SessionScreen(
         mutableStateOf(if (settings.touchAsMouse) InputMode.Trackpad else InputMode.DirectTouch)
     }
 
+    // Multiplier applied to every emitted wheel delta.
+    //
+    // Default (reverseScroll = false) → -1, i.e. content tracks the finger
+    // (macOS "natural scrolling"): finger drag down moves the page down.
+    // Toggling reverseScroll on → +1, the traditional Windows-style mapping
+    // where finger drag down sends the page contents up. Applies uniformly to
+    // physical mouse wheel events and two-finger trackpad pan.
+    val scrollSign: Float = if (settings.reverseScroll) 1f else -1f
+
     // Virtual cursor position in RDP space (used in Trackpad mode).
     var cursorX by remember { mutableStateOf(rdpW / 2f) }
     var cursorY by remember { mutableStateOf(rdpH / 2f) }
     val tapThresholdPx = with(density) { 12.dp.toPx() }
-    // ~12dp of finger travel = one wheel detent.
-    val scrollPxPerDetent = with(density) { 12.dp.toPx() }
+    // ~12dp of finger travel = one wheel detent at 100% speed. Higher speed
+    // setting → fewer px per detent (more sensitive); lower → more px per
+    // detent (slower). Clamp to a sane floor so a runaway pref can't make
+    // every micro-jitter emit a detent.
+    val scrollPxPerDetent = with(density) {
+        val base = 12.dp.toPx()
+        (base * 100f / settings.touchpadScrollSpeedPercent.coerceAtLeast(1)).coerceAtLeast(1f)
+    }
+    // Per-detent multiplier for physical mouse wheel events. Independent of
+    // the touchpad sensitivity above.
+    val mouseWheelScale: Float = settings.mouseWheelSpeedPercent / 100f
     // ~24dp change in finger spread = one Ctrl+wheel zoom step.
     val pinchPxPerDetent = with(density) { 24.dp.toPx() }
     // Trackpad: a second tap that starts within this window of the first tap's UP
@@ -635,9 +663,10 @@ private fun SessionScreen(
                         buttons = 0,
                         // Android AXIS_VSCROLL and RDP wheel rotation use the same sign
                         // convention (positive = wheel rolling away from user / scroll-up),
-                        // so pass through without flipping.
-                        wheelDelta = vsc * 120f,
-                        wheelDeltaH = hsc * 120f,
+                        // so pass through without flipping — unless the user opted into
+                        // "Reverse scroll direction" in settings.
+                        wheelDelta = vsc * 120f * scrollSign * mouseWheelScale,
+                        wheelDeltaH = hsc * 120f * scrollSign * mouseWheelScale,
                     ),
                 )
                 markInteraction()
@@ -1226,14 +1255,15 @@ private fun SessionScreen(
                                     }
                                 } else {
                                     // Vertical scroll: finger drag down → wheel scrolls down.
-                                    // Windows wheel-down is negative.
+                                    // Windows wheel-down is negative. [scrollSign] inverts
+                                    // the whole thing when the "Reverse scroll" pref is on.
                                     while (abs(scrollAccumY) >= scrollPxPerDetent) {
                                         val sign = if (scrollAccumY > 0) -1f else 1f
                                         scrollAccumY -= -sign * scrollPxPerDetent
                                         port.onPointerEvent(
                                             PointerEvent(
                                                 anchorX, anchorY,
-                                                PointerAction.Hover, 0, sign * 120f,
+                                                PointerAction.Hover, 0, sign * 120f * scrollSign,
                                             ),
                                         )
                                         twoFingerScrolled = true
@@ -1248,7 +1278,7 @@ private fun SessionScreen(
                                                 action = PointerAction.Hover,
                                                 buttons = 0,
                                                 wheelDelta = 0f,
-                                                wheelDeltaH = sign * 120f,
+                                                wheelDeltaH = sign * 120f * scrollSign,
                                             ),
                                         )
                                         twoFingerScrolled = true

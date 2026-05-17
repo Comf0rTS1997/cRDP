@@ -163,18 +163,11 @@ class ConnectionEditorViewModel @Inject constructor(
                     host = s.host.trim(),
                     port = s.port.toIntOrNull() ?: 3389,
                     vaultEntryId = s.vaultEntryId,
-                    // Credentials live in the vault now — these inline fields stay
-                    // empty and the repository strips them on persist. Keeping the
-                    // model fields nullable lets legacy on-disk profiles still load.
-                    username = "",
-                    domain = null,
-                    password = "",
                     width = s.width.toIntOrNull() ?: 1280,
                     height = s.height.toIntOrNull() ?: 720,
                     colorDepth = s.colorDepth,
                     autoResolution = s.autoResolution,
                     desktopScaleFactor = scale,
-                    requireBiometric = false,
                     audioMode = s.audioMode,
                     microphoneOverride = s.microphoneOverride,
                     clipboardSyncOverride = s.clipboardSyncOverride,
@@ -194,7 +187,6 @@ class ConnectionEditorViewModel @Inject constructor(
                     height = s.height.toIntOrNull() ?: 720,
                     autoResolution = s.autoResolution,
                     desktopScaleFactor = scale,
-                    requireBiometric = false,
                     audioMode = s.audioMode,
                     microphoneOverride = s.microphoneOverride,
                     clipboardSyncOverride = s.clipboardSyncOverride,

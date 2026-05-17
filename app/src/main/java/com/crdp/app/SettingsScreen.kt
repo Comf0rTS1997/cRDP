@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Monitor
 import androidx.compose.material.icons.filled.Mouse
+import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Tune
@@ -74,6 +75,11 @@ import com.crdp.app.prefs.RenderBackends
 import com.crdp.app.prefs.RenderSamplingOptions
 import com.crdp.app.prefs.Resolutions
 import com.crdp.app.R
+import com.crdp.core.rdp.model.VaultProtection
+import com.crdp.core.rdp.repository.SetProtectionOutcome
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.RadioButton
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import kotlinx.coroutines.launch
 
 private sealed interface ChooserKind {
@@ -87,6 +93,7 @@ private sealed interface ChooserKind {
     data object AudioPlayback : ChooserKind
     data object AudioQuality : ChooserKind
     data object Camera : ChooserKind
+    data object VaultProtectionPick : ChooserKind
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -98,7 +105,20 @@ fun SettingsScreen(
     onTouchAsMouse: (Boolean) -> Unit,
     onHapticFeedback: (Boolean) -> Unit,
     onOpenKeyboardRow: () -> Unit,
-    onVaultEncryption: (Boolean) -> Unit,
+    onOpenMouseSettings: () -> Unit,
+    /**
+     * Requests a change to the vault protection mode. The caller is responsible
+     * for the actual repository call + status surfacing; the screen invokes
+     * this and shows the result via [onVaultProtectionResult]. For
+     * [VaultProtection.Password] the second arg carries the user's passphrase
+     * (already validated against a confirmation field by this screen) and must
+     * be zeroed by the receiver.
+     */
+    onVaultProtectionChange: (VaultProtection, CharArray?) -> Unit,
+    /** Outcome of the most recent [onVaultProtectionChange] for inline error display. */
+    vaultProtectionResult: SetProtectionOutcome? = null,
+    /** Null until the runtime probe finishes; true if the device can host an auth-bound key. */
+    deviceKeySupported: Boolean? = null,
     onAutoDisconnectIdle: (Boolean) -> Unit,
     onDefaultResolution: (String) -> Unit,
     onKeyboardLayout: (String) -> Unit,
@@ -252,6 +272,12 @@ fun SettingsScreen(
                 trailing = { Switch(checked = appSettings.hapticFeedback, onCheckedChange = onHapticFeedback) },
             )
             SettingRow(
+                icon = Icons.Default.SwapVert,
+                title = "Mouse and scrolling",
+                subtitle = "Scroll direction, wheel speed, touchpad sensitivity",
+                onClick = onOpenMouseSettings,
+            )
+            SettingRow(
                 icon = Icons.Default.Keyboard,
                 title = "Keyboard helper row",
                 subtitle = "Keys shown above the soft keyboard",
@@ -269,15 +295,10 @@ fun SettingsScreen(
             SectionHeader("Security")
             SettingRow(
                 icon = Icons.Default.Lock,
-                title = "Vault encryption",
-                subtitle = "On: vault stored encrypted, biometric/PIN required to use credentials.\n" +
-                    "Off: vault stored as plaintext, no auth check.",
-                trailing = {
-                    Switch(
-                        checked = appSettings.vaultEncryption,
-                        onCheckedChange = onVaultEncryption,
-                    )
-                },
+                title = "Vault protection",
+                subtitle = vaultProtectionSubtitle(appSettings.vaultProtection, deviceKeySupported),
+                value = vaultProtectionLabel(appSettings.vaultProtection),
+                onClick = { chooser = ChooserKind.VaultProtectionPick },
             )
             SettingRow(
                 icon = Icons.Default.Lock,
@@ -398,9 +419,219 @@ fun SettingsScreen(
                     selected = appSettings.defaultCameraMode,
                     onSelect = { onDefaultCameraMode(it); dismiss() },
                 )
+                ChooserKind.VaultProtectionPick -> VaultProtectionChooser(
+                    current = appSettings.vaultProtection,
+                    deviceKeySupported = deviceKeySupported,
+                    onSelect = { target, password ->
+                        onVaultProtectionChange(target, password)
+                        dismiss()
+                    },
+                )
             }
         }
     }
+
+    // Surface a transient error if the last protection change failed. The
+    // chooser itself is closed by now; show a non-blocking dialog so the user
+    // knows why nothing changed.
+    var dismissedResult by remember(vaultProtectionResult) { mutableStateOf(false) }
+    val showResultError = vaultProtectionResult != null &&
+        vaultProtectionResult != SetProtectionOutcome.Success &&
+        !dismissedResult
+    if (showResultError) {
+        AlertDialog(
+            onDismissRequest = { dismissedResult = true },
+            title = { Text("Couldn't change vault protection") },
+            text = { Text(vaultProtectionErrorText(vaultProtectionResult!!)) },
+            confirmButton = {
+                TextButton(onClick = { dismissedResult = true }) { Text("OK") }
+            },
+        )
+    }
+}
+
+private fun vaultProtectionLabel(p: VaultProtection): String = when (p) {
+    VaultProtection.None -> "Off (plaintext)"
+    VaultProtection.DeviceKey -> "Device key"
+    VaultProtection.Password -> "Password"
+}
+
+private fun vaultProtectionSubtitle(p: VaultProtection, supported: Boolean?): String = when (p) {
+    VaultProtection.None ->
+        "Vault is stored as plaintext JSON in app storage. No auth gate."
+    VaultProtection.DeviceKey ->
+        "Vault encrypted at rest with a key bound to biometric or device " +
+            "credential. Decryption requires a recent prompt."
+    VaultProtection.Password -> {
+        val tail = if (supported == false) {
+            " Recommended on this device — Keystore can't host an auth-bound key."
+        } else ""
+        "Vault encrypted with a key derived from a password you choose." + tail
+    }
+}
+
+private fun vaultProtectionErrorText(r: SetProtectionOutcome): String = when (r) {
+    SetProtectionOutcome.Success -> ""
+    SetProtectionOutcome.NeedsUnlock ->
+        "Open the vault and unlock it first, then try again."
+    SetProtectionOutcome.NeedsPassword ->
+        "A password is required for this protection mode."
+    SetProtectionOutcome.Failed ->
+        "Could not re-encrypt the vault. The previous protection is still active."
+}
+
+@Composable
+private fun VaultProtectionChooser(
+    current: VaultProtection,
+    deviceKeySupported: Boolean?,
+    onSelect: (VaultProtection, CharArray?) -> Unit,
+) {
+    var passwordPickerFor by remember { mutableStateOf<VaultProtection?>(null) }
+
+    Column(modifier = Modifier.padding(bottom = 16.dp)) {
+        Text(
+            text = "Vault protection",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
+        )
+        ProtectionOption(
+            title = vaultProtectionLabel(VaultProtection.DeviceKey),
+            subtitle = if (deviceKeySupported == false) {
+                "Unavailable: no screen lock or strong biometric on this device."
+            } else {
+                "AES-256-GCM, key bound to biometric / device credential."
+            },
+            selected = current == VaultProtection.DeviceKey,
+            enabled = deviceKeySupported != false,
+            onClick = { onSelect(VaultProtection.DeviceKey, null) },
+        )
+        ProtectionOption(
+            title = vaultProtectionLabel(VaultProtection.Password),
+            subtitle = "AES-256-GCM, key derived from a password you choose (PBKDF2).",
+            selected = current == VaultProtection.Password,
+            enabled = true,
+            onClick = { passwordPickerFor = VaultProtection.Password },
+        )
+        HorizontalDivider()
+        ProtectionOption(
+            title = vaultProtectionLabel(VaultProtection.None),
+            subtitle = "Plaintext on disk. No protection. Explicit opt-in.",
+            selected = current == VaultProtection.None,
+            enabled = true,
+            onClick = { onSelect(VaultProtection.None, null) },
+        )
+    }
+
+    val pickerTarget = passwordPickerFor
+    if (pickerTarget != null) {
+        PasswordSetupDialog(
+            onCancel = { passwordPickerFor = null },
+            onConfirm = { pw ->
+                passwordPickerFor = null
+                onSelect(pickerTarget, pw)
+            },
+        )
+    }
+}
+
+@Composable
+private fun ProtectionOption(
+    title: String,
+    subtitle: String,
+    selected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    ListItem(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = enabled, onClick = onClick),
+        leadingContent = {
+            RadioButton(selected = selected, onClick = null, enabled = enabled)
+        },
+        headlineContent = {
+            Text(
+                title,
+                color = if (enabled) MaterialTheme.colorScheme.onSurface
+                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
+            )
+        },
+        supportingContent = {
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (enabled) MaterialTheme.colorScheme.onSurfaceVariant
+                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f),
+            )
+        },
+    )
+}
+
+@Composable
+private fun PasswordSetupDialog(
+    onCancel: () -> Unit,
+    onConfirm: (CharArray) -> Unit,
+) {
+    var password by remember { mutableStateOf("") }
+    var confirm by remember { mutableStateOf("") }
+    val tooShort = password.isNotEmpty() && password.length < 8
+    val mismatch = confirm.isNotEmpty() && confirm != password
+    val canSubmit = password.length >= 8 && password == confirm
+
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("Set vault password") },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "Choose a password to encrypt the vault. There is no recovery — " +
+                        "forgetting this password means the vault cannot be decrypted.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text("Password") },
+                    singleLine = true,
+                    isError = tooShort,
+                    supportingText = if (tooShort) {
+                        { Text("At least 8 characters.") }
+                    } else null,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = confirm,
+                    onValueChange = { confirm = it },
+                    label = { Text("Confirm password") },
+                    singleLine = true,
+                    isError = mismatch,
+                    supportingText = if (mismatch) {
+                        { Text("Passwords don't match.") }
+                    } else null,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = canSubmit,
+                onClick = {
+                    val out = password.toCharArray()
+                    password = ""
+                    confirm = ""
+                    onConfirm(out)
+                },
+            ) { Text("Set password") }
+        },
+        dismissButton = {
+            TextButton(onClick = onCancel) { Text("Cancel") }
+        },
+    )
 }
 
 @Composable
@@ -705,7 +936,7 @@ private fun AddResolutionDialog(
 }
 
 @Composable
-private fun SectionHeader(title: String) {
+internal fun SectionHeader(title: String) {
     Text(
         text = title.uppercase(),
         style = MaterialTheme.typography.labelSmall,

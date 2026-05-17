@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.crdp.core.rdp.model.VaultProtection
 import com.crdp.feature.session.AuxKeys
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
@@ -19,6 +20,27 @@ import javax.inject.Singleton
 data class AppSettings(
     val touchAsMouse: Boolean = true,
     val hapticFeedback: Boolean = true,
+    /**
+     * Scroll-direction selector. Default (false) is macOS-style natural
+     * scrolling: content tracks the finger / wheel direction. True flips both
+     * physical mouse wheel and two-finger touchpad scroll to traditional
+     * Windows behavior (finger-down → page-down). Applies uniformly to mouse
+     * input and trackpad-mode two-finger pan.
+     */
+    val reverseScroll: Boolean = false,
+    /**
+     * Wheel-delta multiplier for physical mouse / external trackpad scroll
+     * events. Stored as a percent — 100 = unchanged, 200 = twice as much
+     * scroll per wheel detent, 50 = half. See [ScrollSpeeds].
+     */
+    val mouseWheelSpeed: Int = 100,
+    /**
+     * Sensitivity for two-finger touchpad scroll, inversely proportional to
+     * the finger travel required per emitted wheel detent. 100 = default
+     * (~12dp per detent), 200 = half the travel per detent (faster), 50 =
+     * twice the travel (slower).
+     */
+    val touchpadScrollSpeed: Int = 100,
     val autoDisconnectIdle: Boolean = false,
     val defaultResolution: String = "Match device",
     val keyboardLayout: String = "US English",
@@ -53,13 +75,17 @@ data class AppSettings(
      */
     val auxKeyRowKeys: Set<String> = AuxKeys.DEFAULT_ENABLED,
     /**
-     * Single global toggle for credential storage. When true, [VaultEntry]s are persisted
-     * to an EncryptedFile (AES-256-GCM via the AndroidKeystore-backed MasterKey) AND the
-     * UI requires a biometric/device-credential unlock to view the vault or use a
-     * connection that references a vault entry. When false, entries are stored as
-     * plaintext JSON and no auth gate is presented anywhere.
+     * Active protection mode for the credential vault. See [VaultProtection]:
+     *  - [VaultProtection.None]: plaintext, no auth gate.
+     *  - [VaultProtection.DeviceKey]: AES-256-GCM under an auth-bound Keystore
+     *    master key; biometric/device-credential gate enforced cryptographically.
+     *  - [VaultProtection.Password]: AES-256-GCM under a PBKDF2-derived key
+     *    from a user passphrase, for devices that can't host an auth-bound key.
+     *
+     * Migrated from the legacy boolean `vault_encryption` pref (true → DeviceKey,
+     * false → None) inside [appSettings].
      */
-    val vaultEncryption: Boolean = true,
+    val vaultProtection: VaultProtection = VaultProtection.DeviceKey,
 )
 
 object AudioModes {
@@ -156,6 +182,21 @@ object DpiScales {
     fun label(value: Int): String = "$value%"
 }
 
+/**
+ * Speed multipliers (as percents) shared by the mouse-wheel and touchpad-scroll
+ * settings. 100 is the unmodified baseline; values above accelerate, below
+ * decelerate. The set is curated rather than a free slider so users can pick a
+ * sensible value without fiddling with a continuous control.
+ */
+object ScrollSpeeds {
+    const val MIN = 25
+    const val MAX = 400
+    const val DEFAULT = 100
+    val OPTIONS = listOf(25, 50, 75, 100, 150, 200, 300, 400)
+    fun coerce(value: Int): Int = value.coerceIn(MIN, MAX)
+    fun label(value: Int): String = "$value%"
+}
+
 object AutoLockVault {
     const val IMMEDIATELY = 0
     const val NEVER = -1
@@ -178,6 +219,9 @@ class UserPreferencesRepository @Inject constructor(
     private val dynamicKey = booleanPreferencesKey("dynamic_color")
     private val touchAsMouseKey = booleanPreferencesKey("touch_as_mouse")
     private val hapticKey = booleanPreferencesKey("haptic_feedback")
+    private val reverseScrollKey = booleanPreferencesKey("reverse_scroll")
+    private val mouseWheelSpeedKey = intPreferencesKey("mouse_wheel_speed")
+    private val touchpadScrollSpeedKey = intPreferencesKey("touchpad_scroll_speed")
     private val autoDisconnectKey = booleanPreferencesKey("auto_disconnect_idle")
     private val defaultResolutionKey = stringPreferencesKey("default_resolution")
     private val keyboardLayoutKey = stringPreferencesKey("keyboard_layout")
@@ -197,7 +241,9 @@ class UserPreferencesRepository @Inject constructor(
     private val defaultClipboardSyncKey = booleanPreferencesKey("default_clipboard_sync")
     private val defaultPrinterShareKey = booleanPreferencesKey("default_printer_share")
     private val printerShareNameKey = stringPreferencesKey("printer_share_name")
+    /** Legacy boolean toggle. Read on first launch and migrated to [vaultProtectionKey]. */
     private val vaultEncryptionKey = booleanPreferencesKey("vault_encryption")
+    private val vaultProtectionKey = stringPreferencesKey("vault_protection")
     private val auxKeyRowKeysKey = stringSetPreferencesKey("aux_key_row_keys")
     /** Sentinel id stored alongside the user-selected keys to distinguish
      *  "empty selection" from "never written" — without it, unchecking the last
@@ -212,6 +258,9 @@ class UserPreferencesRepository @Inject constructor(
         AppSettings(
             touchAsMouse = prefs[touchAsMouseKey] ?: true,
             hapticFeedback = prefs[hapticKey] ?: true,
+            reverseScroll = prefs[reverseScrollKey] ?: false,
+            mouseWheelSpeed = ScrollSpeeds.coerce(prefs[mouseWheelSpeedKey] ?: ScrollSpeeds.DEFAULT),
+            touchpadScrollSpeed = ScrollSpeeds.coerce(prefs[touchpadScrollSpeedKey] ?: ScrollSpeeds.DEFAULT),
             autoDisconnectIdle = prefs[autoDisconnectKey] ?: false,
             defaultResolution = prefs[defaultResolutionKey] ?: "Match device",
             keyboardLayout = prefs[keyboardLayoutKey] ?: "US English",
@@ -231,7 +280,19 @@ class UserPreferencesRepository @Inject constructor(
             defaultClipboardSync = prefs[defaultClipboardSyncKey] ?: true,
             defaultPrinterShare = prefs[defaultPrinterShareKey] ?: false,
             printerShareName = prefs[printerShareNameKey]?.takeIf { it.isNotBlank() } ?: "cRDP",
-            vaultEncryption = prefs[vaultEncryptionKey] ?: true,
+            vaultProtection = run {
+                val raw = prefs[vaultProtectionKey]
+                when (raw) {
+                    "none" -> VaultProtection.None
+                    "device" -> VaultProtection.DeviceKey
+                    "password" -> VaultProtection.Password
+                    else -> {
+                        // Fall back to the legacy boolean during migration.
+                        val legacy = prefs[vaultEncryptionKey]
+                        if (legacy == false) VaultProtection.None else VaultProtection.DeviceKey
+                    }
+                }
+            },
             auxKeyRowKeys = run {
                 val stored = prefs[auxKeyRowKeysKey]
                 if (stored == null) AuxKeys.DEFAULT_ENABLED
@@ -250,6 +311,18 @@ class UserPreferencesRepository @Inject constructor(
 
     suspend fun setHapticFeedback(value: Boolean) {
         context.userPrefs.edit { it[hapticKey] = value }
+    }
+
+    suspend fun setReverseScroll(value: Boolean) {
+        context.userPrefs.edit { it[reverseScrollKey] = value }
+    }
+
+    suspend fun setMouseWheelSpeed(value: Int) {
+        context.userPrefs.edit { it[mouseWheelSpeedKey] = ScrollSpeeds.coerce(value) }
+    }
+
+    suspend fun setTouchpadScrollSpeed(value: Int) {
+        context.userPrefs.edit { it[touchpadScrollSpeedKey] = ScrollSpeeds.coerce(value) }
     }
 
     suspend fun setAutoDisconnectIdle(value: Boolean) {
@@ -343,8 +416,18 @@ class UserPreferencesRepository @Inject constructor(
         context.userPrefs.edit { it[printerShareNameKey] = trimmed }
     }
 
-    suspend fun setVaultEncryption(value: Boolean) {
-        context.userPrefs.edit { it[vaultEncryptionKey] = value }
+    suspend fun setVaultProtection(value: VaultProtection) {
+        val token = when (value) {
+            VaultProtection.None -> "none"
+            VaultProtection.DeviceKey -> "device"
+            VaultProtection.Password -> "password"
+        }
+        context.userPrefs.edit { prefs ->
+            prefs[vaultProtectionKey] = token
+            // Drop the legacy key so the migration fallback above doesn't
+            // shadow a user choice if the new key is ever cleared.
+            prefs.remove(vaultEncryptionKey)
+        }
     }
 
     suspend fun setAuxKeyRowKey(id: String, enabled: Boolean) {

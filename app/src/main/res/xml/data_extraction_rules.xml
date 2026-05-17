@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Excludes credential storage from cloud (Auto Backup → Google Drive) and
+  device-to-device transfer. The encrypted vault file is bound to the
+  AndroidKeystore-backed MasterKey on the original device, so a copy in a
+  backup is useless; the plaintext mode would otherwise leak credentials.
+  Either way, this file never needs to leave the device.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path="crdp_vault.json" />
+        <exclude domain="file" path="crdp_vault.json.tmp" />
+        <exclude domain="file" path="crdp_profiles_enc.json" />
+        <exclude domain="file" path="crdp_profiles_enc.json.tmp" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="crdp_vault.json" />
+        <exclude domain="file" path="crdp_vault.json.tmp" />
+        <exclude domain="file" path="crdp_profiles_enc.json" />
+        <exclude domain="file" path="crdp_profiles_enc.json.tmp" />
+    </device-transfer>
+</data-extraction-rules>

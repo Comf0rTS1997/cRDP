@@ -3,14 +3,19 @@ package com.crdp.app.data
 import android.content.Context
 import androidx.security.crypto.EncryptedFile
 import androidx.security.crypto.MasterKey
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 /**
  * Persists the profile JSON blob in an AES-256-GCM encrypted file backed by the AndroidKeystore.
- * The MasterKey has no user-authentication requirement — biometric gating is handled at the UI
- * layer (VaultGate) and, optionally, at the per-password key layer (PasswordCryptoManager).
+ * Writes go through a `.tmp` companion + atomic rename so a kill mid-write cannot leave a
+ * half-truncated profile list. The MasterKey has no user-authentication requirement — the
+ * biometric prompt at the UI layer (VaultGate) is the user-visible gate.
  */
 internal class EncryptedProfileStore(context: Context) {
 
@@ -23,27 +28,37 @@ internal class EncryptedProfileStore(context: Context) {
     }
 
     private val storeFile = File(appContext.filesDir, "crdp_profiles_enc.json")
+    private val tmpFile = File(appContext.filesDir, "crdp_profiles_enc.json.tmp")
 
     private val mutex = Mutex()
 
     suspend fun readAll(): String? = mutex.withLock {
-        if (!storeFile.exists()) return@withLock null
-        runCatching {
-            buildEncryptedFile().openFileInput().use { it.bufferedReader().readText() }
-        }.getOrNull()
-    }
-
-    suspend fun writeAll(json: String): Unit = mutex.withLock {
-        // EncryptedFile cannot overwrite; delete and re-create.
-        if (storeFile.exists()) storeFile.delete()
-        buildEncryptedFile().openFileOutput().use { out ->
-            out.write(json.toByteArray(Charsets.UTF_8))
+        withContext(Dispatchers.IO) {
+            if (!storeFile.exists()) return@withContext null
+            runCatching {
+                buildEncryptedFile(storeFile).openFileInput().use { it.bufferedReader().readText() }
+            }.getOrNull()
         }
     }
 
-    private fun buildEncryptedFile() = EncryptedFile.Builder(
+    suspend fun writeAll(json: String): Unit = mutex.withLock {
+        withContext(Dispatchers.IO) {
+            if (tmpFile.exists()) tmpFile.delete()
+            buildEncryptedFile(tmpFile).openFileOutput().use { out ->
+                out.write(json.toByteArray(Charsets.UTF_8))
+            }
+            Files.move(
+                tmpFile.toPath(),
+                storeFile.toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+                StandardCopyOption.ATOMIC_MOVE,
+            )
+        }
+    }
+
+    private fun buildEncryptedFile(target: File) = EncryptedFile.Builder(
         appContext,
-        storeFile,
+        target,
         masterKey,
         EncryptedFile.FileEncryptionScheme.AES256_GCM_HKDF_4KB,
     ).build()

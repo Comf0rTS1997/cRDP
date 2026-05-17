@@ -17,8 +17,13 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -73,12 +78,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import android.content.Context
-import android.text.Editable
-import android.text.InputType
-import android.text.TextWatcher
 import android.view.HapticFeedbackConstants
 import android.view.KeyCharacterMap
-import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import androidx.compose.ui.text.font.FontWeight
@@ -171,6 +172,8 @@ data class SessionUserSettings(
      * locale", matching pre-wiring behavior.
      */
     val keyboardLayoutId: Int = 0,
+    /** Ids of [AuxKeys] entries shown in the row attached above the soft keyboard. */
+    val auxKeyRowKeys: Set<String> = AuxKeys.DEFAULT_ENABLED,
 )
 
 @Composable
@@ -178,6 +181,7 @@ fun SessionRoute(
     viewModel: SessionViewModel,
     onBack: () -> Unit,
     settings: SessionUserSettings = SessionUserSettings(),
+    onTouchAsMouseChanged: (Boolean) -> Unit = {},
 ) {
     val config = LocalConfiguration.current
     val density = LocalDensity.current
@@ -410,6 +414,7 @@ fun SessionRoute(
                 onBack = onBack,
                 onAttachSurface = viewModel::attachSurface,
                 onDetachSurface = viewModel::detachSurface,
+                onTouchAsMouseChanged = onTouchAsMouseChanged,
             )
         }
         else -> {
@@ -432,6 +437,7 @@ private fun SessionScreen(
     onBack: () -> Unit,
     onAttachSurface: (android.view.Surface, Int, Int, com.crdp.core.rdp.engine.RenderOptions) -> Unit,
     onDetachSurface: () -> Unit,
+    onTouchAsMouseChanged: (Boolean) -> Unit = {},
 ) {
     val port = sessionReady.port
     val sessionState by port.sessionState.collectAsStateWithLifecycle()
@@ -453,6 +459,11 @@ private fun SessionScreen(
     // Dock layout bounds kept in sync via SideEffect; read from the pointerInput coroutine
     // to exclude dock-area touches from RDP input processing.
     val dockBoundsRef = remember { mutableStateOf<Rect?>(null) }
+    // Aux key row bounds (when the soft keyboard is up). Same purpose as
+    // dockBoundsRef — the outer pointerInput consumes touches everywhere it
+    // doesn't recognize, so without an exclusion the row's taps/scroll would
+    // never reach the row itself.
+    val auxRowBoundsRef = remember { mutableStateOf<Rect?>(null) }
 
     // Surface dimensions (updated from SurfaceHolder callbacks on main thread).
     // Use an explicit MutableState so the AndroidView factory lambda captures the reference.
@@ -838,11 +849,13 @@ private fun SessionScreen(
         }
     }
 
-    // Consume the system Back gesture/key while a session is live so it goes to
-    // the remote desktop instead of popping the session screen. Disconnect is
-    // available via the dock menu. onPreviewKeyEvent already forwards the keystroke
-    // before BackHandler fires, so the server sees the KEYCODE_BACK event.
-    BackHandler(enabled = sessionConnected) { /* swallow */ }
+    // Consume the system Back gesture/key for the whole lifetime of the session
+    // screen — including the brief "Connecting…" window — so neither popping the
+    // route nor the predictive-back animation can dismiss the session unexpectedly.
+    // Disconnect remains available via the dock menu. onPreviewKeyEvent forwards
+    // the keystroke before BackHandler fires, so the remote desktop still receives
+    // KEYCODE_BACK while connected.
+    BackHandler(enabled = true) { /* swallow */ }
 
     LaunchedEffect(settings.autoDisconnectIdle) {
         if (!settings.autoDisconnectIdle) return@LaunchedEffect
@@ -877,6 +890,10 @@ private fun SessionScreen(
                         if (firstDown.type != PointerType.Touch) continue
                         val dockBoundsAtStart = dockBoundsRef.value
                         if (dockBoundsAtStart != null && dockBoundsAtStart.contains(firstDown.position)) {
+                            continue
+                        }
+                        val auxRowBounds = auxRowBoundsRef.value
+                        if (auxRowBounds != null && auxRowBounds.contains(firstDown.position)) {
                             continue
                         }
                         firstDown.consume()
@@ -1741,6 +1758,7 @@ private fun SessionScreen(
                                     } else {
                                         InputMode.Trackpad
                                     }
+                                    onTouchAsMouseChanged(inputMode == InputMode.Trackpad)
                                     val label = if (inputMode == InputMode.Trackpad) "Trackpad mode" else "Direct touch mode"
                                     scope.launch { snackbarHostState.showSnackbar(label) }
                                 },
@@ -1805,51 +1823,83 @@ private fun SessionScreen(
             }
         }
 
-        // Hidden 1dp EditText that provides an InputConnection for soft-keyboard input.
-        // Characters committed via IME are forwarded to the RDP session as key events.
+        // Hidden 1dp EditText that hosts a custom InputConnection. The IC
+        // converts the IME's commit/composing protocol into clean Down/Up
+        // key events forwarded to the remote desktop. See RemoteImeEditText
+        // for why we don't just use a TextWatcher.
         AndroidView(
             factory = { ctx ->
-                EditText(ctx).apply {
+                RemoteImeEditText(ctx).apply {
                     setBackgroundColor(android.graphics.Color.TRANSPARENT)
                     isCursorVisible = false
                     setTextColor(android.graphics.Color.TRANSPARENT)
                     setHintTextColor(android.graphics.Color.TRANSPARENT)
-                    imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_FLAG_NO_FULLSCREEN
-                    inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-                    var ignoreChange = false
-                    addTextChangedListener(object : TextWatcher {
-                        override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-                        override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
-                        override fun afterTextChanged(s: Editable?) {
-                            if (ignoreChange) return
-                            val text = s?.toString() ?: return
-                            if (text.isEmpty()) return
-                            ignoreChange = true
-                            s?.clear()
-                            ignoreChange = false
-                            val kcm = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD)
-                            for (ch in text) {
-                                val events = kcm.getEvents(charArrayOf(ch)) ?: continue
-                                for (ke in events) {
-                                    val kAction = when (ke.action) {
-                                        AndroidKeyEvent.ACTION_DOWN -> KeyAction.Down
-                                        AndroidKeyEvent.ACTION_UP -> KeyAction.Up
-                                        else -> null
-                                    } ?: continue
-                                    if (kAction == KeyAction.Down) haptic(HapticFeedbackConstants.KEYBOARD_TAP)
-                                    markInteraction()
-                                    port.onKeyEvent(
-                                        KeyEventPayload(
-                                            keyCode = ke.keyCode,
-                                            metaState = ke.metaState,
-                                            action = kAction,
-                                            scanCode = ke.scanCode,
-                                        ),
-                                    )
-                                }
+
+                    onTextInput = { text ->
+                        val kcm = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD)
+                        for (ch in text) {
+                            val events = kcm.getEvents(charArrayOf(ch)) ?: continue
+                            for (ke in events) {
+                                val kAction = when (ke.action) {
+                                    AndroidKeyEvent.ACTION_DOWN -> KeyAction.Down
+                                    AndroidKeyEvent.ACTION_UP -> KeyAction.Up
+                                    else -> null
+                                } ?: continue
+                                if (kAction == KeyAction.Down) haptic(HapticFeedbackConstants.KEYBOARD_TAP)
+                                markInteraction()
+                                port.onKeyEvent(
+                                    KeyEventPayload(
+                                        keyCode = ke.keyCode,
+                                        metaState = ke.metaState,
+                                        action = kAction,
+                                        scanCode = ke.scanCode,
+                                    ),
+                                )
                             }
                         }
-                    })
+                    }
+                    onSpecialKey = { ev ->
+                        val kAction = when (ev.action) {
+                            AndroidKeyEvent.ACTION_DOWN -> KeyAction.Down
+                            AndroidKeyEvent.ACTION_UP -> KeyAction.Up
+                            else -> null
+                        }
+                        if (kAction != null) {
+                            if (kAction == KeyAction.Down) haptic(HapticFeedbackConstants.KEYBOARD_TAP)
+                            markInteraction()
+                            port.onKeyEvent(
+                                KeyEventPayload(
+                                    keyCode = ev.keyCode,
+                                    metaState = ev.metaState,
+                                    action = kAction,
+                                    scanCode = ev.scanCode,
+                                ),
+                            )
+                        }
+                    }
+                    onBackspace = { count ->
+                        repeat(count) {
+                            haptic(HapticFeedbackConstants.KEYBOARD_TAP)
+                            markInteraction()
+                            port.onKeyEvent(
+                                KeyEventPayload(
+                                    keyCode = AndroidKeyEvent.KEYCODE_DEL,
+                                    metaState = 0,
+                                    action = KeyAction.Down,
+                                ),
+                            )
+                            port.onKeyEvent(
+                                KeyEventPayload(
+                                    keyCode = AndroidKeyEvent.KEYCODE_DEL,
+                                    metaState = 0,
+                                    action = KeyAction.Up,
+                                ),
+                            )
+                        }
+                    }
+                    // Hardware-key passthrough (physical keyboards, DeX). The
+                    // custom InputConnection above doesn't see these because
+                    // they bypass the IME entirely.
                     setOnKeyListener { _, keyCode, event ->
                         val kAction = when (event.action) {
                             AndroidKeyEvent.ACTION_DOWN -> KeyAction.Down
@@ -1875,6 +1925,47 @@ private fun SessionScreen(
                 .size(1.dp)
                 .align(Alignment.TopStart),
         )
+
+        // Aux key row pinned to the top of the soft keyboard. imePadding()
+        // translates the row up by the IME inset so it tracks the keyboard's
+        // open/close animation; the visibility gate hides it when no IME is up.
+        val imeBottom = WindowInsets.ime.getBottom(density)
+        if (imeBottom > 0 && settings.auxKeyRowKeys.isNotEmpty()) {
+            AuxKeyRow(
+                enabledIds = settings.auxKeyRowKeys,
+                onKey = { entry, action ->
+                    if (action == KeyAction.Down) haptic(HapticFeedbackConstants.KEYBOARD_TAP)
+                    markInteraction()
+                    port.onKeyEvent(
+                        KeyEventPayload(
+                            keyCode = entry.keyCode,
+                            metaState = 0,
+                            action = action,
+                        ),
+                    )
+                },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .imePadding()
+                    // Bounds are reported in this BoxWithConstraints' local
+                    // coords, matching firstDown.position in the outer
+                    // pointerInput — so the exclusion check works directly.
+                    .onGloballyPositioned { coords ->
+                        val pos = coords.positionInParent()
+                        val sz = coords.size
+                        auxRowBoundsRef.value = Rect(
+                            left = pos.x,
+                            top = pos.y,
+                            right = pos.x + sz.width,
+                            bottom = pos.y + sz.height,
+                        )
+                    },
+            )
+        } else if (auxRowBoundsRef.value != null) {
+            // IME hidden → row not laid out → onGloballyPositioned won't fire.
+            // Reset the exclusion rect so the area becomes RDP-clickable again.
+            auxRowBoundsRef.value = null
+        }
     }
 }
 

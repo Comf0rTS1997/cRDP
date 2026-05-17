@@ -97,6 +97,7 @@ fun SettingsScreen(
     appSettings: AppSettings,
     onTouchAsMouse: (Boolean) -> Unit,
     onHapticFeedback: (Boolean) -> Unit,
+    onOpenKeyboardRow: () -> Unit,
     onVaultEncryption: (Boolean) -> Unit,
     onAutoDisconnectIdle: (Boolean) -> Unit,
     onDefaultResolution: (String) -> Unit,
@@ -249,6 +250,12 @@ fun SettingsScreen(
                 title = "Haptic feedback",
                 subtitle = "On taps and key presses",
                 trailing = { Switch(checked = appSettings.hapticFeedback, onCheckedChange = onHapticFeedback) },
+            )
+            SettingRow(
+                icon = Icons.Default.Keyboard,
+                title = "Keyboard helper row",
+                subtitle = "Keys shown above the soft keyboard",
+                onClick = onOpenKeyboardRow,
             )
 
             SectionHeader("Vault")

@@ -161,6 +161,10 @@ class MainViewModel @Inject constructor(
         }
     }
 
+    fun setAuxKeyRowKey(id: String, enabled: Boolean) {
+        viewModelScope.launch { userPreferencesRepository.setAuxKeyRowKey(id, enabled) }
+    }
+
     private val _vaultUnlockedAt = MutableStateFlow<Long?>(null)
     val vaultUnlockedAt = _vaultUnlockedAt.asStateFlow()
 

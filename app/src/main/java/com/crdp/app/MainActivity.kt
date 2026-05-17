@@ -357,6 +357,7 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                                 appSettings = appSettings,
                                 onTouchAsMouse = mainViewModel::setTouchAsMouse,
                                 onHapticFeedback = mainViewModel::setHapticFeedback,
+                                onOpenKeyboardRow = { navController.navigate("settings/keyboard-row") },
                                 onVaultEncryption = mainViewModel::setVaultEncryption,
                                 onAutoDisconnectIdle = mainViewModel::setAutoDisconnectIdle,
                                 onDefaultResolution = mainViewModel::setDefaultResolution,
@@ -376,6 +377,19 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                                 onDefaultPrinterShare = mainViewModel::setDefaultPrinterShare,
                                 onOpenVault = { navController.navigate("settings/vault") },
                                 onOpenAbout = { navController.navigate("settings/about") },
+                                onBack = { navController.popBackStack() },
+                            )
+                        }
+                        composable(
+                            route = "settings/keyboard-row",
+                            enterTransition = { EnterTransition.None },
+                            exitTransition = { ExitTransition.None },
+                            popEnterTransition = { EnterTransition.None },
+                            popExitTransition = { ExitTransition.None },
+                        ) {
+                            KeyboardRowSettingsScreen(
+                                enabled = appSettings.auxKeyRowKeys,
+                                onToggle = mainViewModel::setAuxKeyRowKey,
                                 onBack = { navController.popBackStack() },
                             )
                         }
@@ -446,6 +460,7 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                             SessionRoute(
                                 viewModel = vm,
                                 onBack = { navController.popBackStack() },
+                                onTouchAsMouseChanged = mainViewModel::setTouchAsMouse,
                                 settings = SessionUserSettings(
                                     hapticFeedback = appSettings.hapticFeedback,
                                     touchAsMouse = appSettings.touchAsMouse,
@@ -480,6 +495,7 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                                     defaultClipboardSync = appSettings.defaultClipboardSync,
                                     defaultPrinterShare = appSettings.defaultPrinterShare,
                                     keyboardLayoutId = KeyboardLayouts.layoutId(appSettings.keyboardLayout),
+                                    auxKeyRowKeys = appSettings.auxKeyRowKeys,
                                 ),
                             )
                         }

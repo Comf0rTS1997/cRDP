@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.crdp.feature.session.AuxKeys
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -44,6 +45,13 @@ data class AppSettings(
     val defaultPrinterShare: Boolean = false,
     /** Name advertised to the remote session for the redirected printer. */
     val printerShareName: String = "cRDP",
+    /**
+     * IDs of aux keys (Esc/Tab/F1-F12/arrows/modifiers/etc.) shown in the row that
+     * sits above the soft keyboard inside a session. See [AuxKeys] for the full
+     * registry. Empty set means "use defaults" so a fresh install still gets the
+     * expected row instead of an empty bar.
+     */
+    val auxKeyRowKeys: Set<String> = AuxKeys.DEFAULT_ENABLED,
     /**
      * Single global toggle for credential storage. When true, [VaultEntry]s are persisted
      * to an EncryptedFile (AES-256-GCM via the AndroidKeystore-backed MasterKey) AND the
@@ -190,6 +198,11 @@ class UserPreferencesRepository @Inject constructor(
     private val defaultPrinterShareKey = booleanPreferencesKey("default_printer_share")
     private val printerShareNameKey = stringPreferencesKey("printer_share_name")
     private val vaultEncryptionKey = booleanPreferencesKey("vault_encryption")
+    private val auxKeyRowKeysKey = stringSetPreferencesKey("aux_key_row_keys")
+    /** Sentinel id stored alongside the user-selected keys to distinguish
+     *  "empty selection" from "never written" — without it, unchecking the last
+     *  key would look identical to a fresh install and snap back to defaults. */
+    private val auxKeyRowSentinelId = "__set__"
 
     val dynamicColor: Flow<Boolean> = context.userPrefs.data.map { prefs ->
         prefs[dynamicKey] ?: true
@@ -219,6 +232,11 @@ class UserPreferencesRepository @Inject constructor(
             defaultPrinterShare = prefs[defaultPrinterShareKey] ?: false,
             printerShareName = prefs[printerShareNameKey]?.takeIf { it.isNotBlank() } ?: "cRDP",
             vaultEncryption = prefs[vaultEncryptionKey] ?: true,
+            auxKeyRowKeys = run {
+                val stored = prefs[auxKeyRowKeysKey]
+                if (stored == null) AuxKeys.DEFAULT_ENABLED
+                else (stored - auxKeyRowSentinelId).intersect(AuxKeys.BY_ID.keys)
+            },
         )
     }
 
@@ -327,6 +345,18 @@ class UserPreferencesRepository @Inject constructor(
 
     suspend fun setVaultEncryption(value: Boolean) {
         context.userPrefs.edit { it[vaultEncryptionKey] = value }
+    }
+
+    suspend fun setAuxKeyRowKey(id: String, enabled: Boolean) {
+        if (!AuxKeys.BY_ID.containsKey(id)) return
+        context.userPrefs.edit { prefs ->
+            val stored = prefs[auxKeyRowKeysKey]
+            val current: Set<String> = stored ?: (AuxKeys.DEFAULT_ENABLED + auxKeyRowSentinelId)
+            val updated = if (enabled) current + id else current - id
+            // Always re-pin the sentinel so an empty selection still reads back as
+            // "user wrote {}" rather than reverting to defaults.
+            prefs[auxKeyRowKeysKey] = updated + auxKeyRowSentinelId
+        }
     }
 
     suspend fun removeCustomResolution(value: String) {

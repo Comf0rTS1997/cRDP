@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -10,7 +12,26 @@ plugins {
 val crdpEngine: String =
     (project.findProperty("crdp.engine") as? String)
         ?: System.getenv("CRDP_ENGINE")
-        ?: "stub"
+        ?: "afreerdp"
+
+// Release signing: prefer a project-local keystore.properties (gitignored)
+// for the non-secret parts (storeFile, keyAlias). Passwords are resolved at
+// build time from env vars (CRDP_STORE_PASSWORD / CRDP_KEY_PASSWORD), so the
+// preferred entry point is `scripts/build-release.ps1`, which prompts and
+// sets the env vars for one build. Falls back to keystore.properties values
+// if those keys are present, and finally to the Android debug keystore so
+// non-release tasks always work.
+val keystorePropertiesFile = rootProject.file("keystore.properties")
+val keystoreProperties = Properties().apply {
+    if (keystorePropertiesFile.exists()) {
+        keystorePropertiesFile.inputStream().use { load(it) }
+    }
+}
+
+fun resolveSecret(envKey: String, fileKey: String): String? {
+    System.getenv(envKey)?.takeIf { it.isNotEmpty() }?.let { return it }
+    return keystoreProperties.getProperty(fileKey)?.takeIf { it.isNotEmpty() }
+}
 
 android {
     namespace = "com.crdp.app"
@@ -29,9 +50,29 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            if (keystoreProperties.containsKey("storeFile")) {
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                val resolvedStorePass = resolveSecret("CRDP_STORE_PASSWORD", "storePassword")
+                val resolvedKeyPass = resolveSecret("CRDP_KEY_PASSWORD", "keyPassword")
+                storePassword = resolvedStorePass ?: "android"
+                keyPassword = resolvedKeyPass ?: resolvedStorePass ?: "android"
+            } else {
+                storeFile = file("${System.getProperty("user.home")}/.android/debug.keystore")
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

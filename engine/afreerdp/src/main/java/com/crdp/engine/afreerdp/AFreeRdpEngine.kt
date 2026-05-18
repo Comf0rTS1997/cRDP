@@ -479,20 +479,29 @@ class AFreeRdpEngine @Inject constructor(
             username: StringBuilder,
             domain: StringBuilder,
             password: StringBuilder,
-        ): Boolean = blockOnChallenge(
-            EngineChallenge.Auth(
-                id = UUID.randomUUID().toString(),
-                title = "Sign in",
-                usernameHint = username.toString(),
-                domainHint = domain.toString().ifBlank { null },
-            ),
-        ).let { resp ->
-            if (resp is ChallengeResponse.Credentials) {
-                username.setLength(0); username.append(resp.username)
-                password.setLength(0); password.append(resp.password)
-                domain.setLength(0); domain.append(resp.domain.orEmpty())
-                true
-            } else false
+        ): Boolean {
+            // FreeRDP's transport_connect_tls path (utils_authenticate with
+            // override=FALSE) always fires this callback for /sec:tls connections,
+            // even when credentials were already supplied via /u: /p:. The
+            // StringBuilders arrive populated with the current settings values in
+            // that case; accept them as-is instead of forcing a redundant prompt.
+            // TS_INFO_PACKET gets the credentials either way.
+            if (username.isNotEmpty() && password.isNotEmpty()) return true
+            return blockOnChallenge(
+                EngineChallenge.Auth(
+                    id = UUID.randomUUID().toString(),
+                    title = "Sign in",
+                    usernameHint = username.toString(),
+                    domainHint = domain.toString().ifBlank { null },
+                ),
+            ).let { resp ->
+                if (resp is ChallengeResponse.Credentials) {
+                    username.setLength(0); username.append(resp.username)
+                    password.setLength(0); password.append(resp.password)
+                    domain.setLength(0); domain.append(resp.domain.orEmpty())
+                    true
+                } else false
+            }
         }
 
         override fun onGatewayAuthenticate(
@@ -715,9 +724,38 @@ class AFreeRdpEngine @Inject constructor(
         // brackets themselves, so don't double-wrap).
         args += "/v:${formatHostForFreeRdp(p.host)}"
         args += "/port:${p.port}"
-        if (p.username.isNotBlank()) args += "/u:${p.username}"
-        if (!p.domain.isNullOrBlank()) args += "/d:${p.domain}"
-        if (p.password.isNotBlank()) args += "/p:${p.password}"
+        // Defensive whitespace trim. Paste-from-password-manager often leaves a trailing
+        // newline or space; FreeRDP forwards it verbatim into TS_INFO_PACKET, and the
+        // Windows logon matcher then rejects credentials that would otherwise be correct
+        // (you land on the lock screen with no auto-login despite NLA being off). The
+        // editor also trims, but existing vault entries written before that fix would
+        // still carry the whitespace, so trim again here.
+        val username = p.username.trim()
+        val domain = p.domain?.trim()
+        val password = p.password.trim()
+        // Entra-joined hosts: send the verbatim "AzureAD\<UPN>" string in TS_INFO_PACKET.
+        // mstsc puts the unsplit prefix in the UserName field with an empty Domain, and
+        // that's what the Windows AzureAD logon provider auto-accepts. FreeRDP's /u:
+        // parser ordinarily splits on the first '\' into Domain + Username, which the
+        // provider then rejects (you land on the lock screen with no auto-login). The
+        // post-/u: handler in cmdline.c skips the split when FreeRDP_Domain has been
+        // explicitly set — even to an empty string — so we pair /u: with an empty /d:
+        // to force the verbatim storage path.
+        val isAzureAd = username.startsWith("AzureAD\\", ignoreCase = true) ||
+            domain.equals("AzureAD", ignoreCase = true)
+        if (isAzureAd) {
+            val verbatim = if (username.startsWith("AzureAD\\", ignoreCase = true)) {
+                username
+            } else {
+                "AzureAD\\$username"
+            }
+            if (verbatim.isNotBlank()) args += "/u:$verbatim"
+            args += "/d:"
+        } else {
+            if (username.isNotBlank()) args += "/u:$username"
+            if (!domain.isNullOrBlank()) args += "/d:$domain"
+        }
+        if (password.isNotBlank()) args += "/p:$password"
         args += "/size:${p.width}x${p.height}"
         args += "/bpp:${p.colorDepth}"
         // FreeRDP /scale-desktop: 100..500. Skip when 100 to keep argv minimal.
@@ -860,10 +898,8 @@ class AFreeRdpEngine @Inject constructor(
         // NLA + NTLM-only to skip Kerberos KDC probes that can't resolve in direct-IP
         // scenarios. Domain accounts go through NLA with the auth package unrestricted
         // so Kerberos can be tried where a KDC is reachable.
-        val isAzureAd = p.username.startsWith("AzureAD\\", ignoreCase = true) ||
-            p.domain.equals("AzureAD", ignoreCase = true)
-        val hasDomainOrUpn = p.username.contains('\\') || p.username.contains('@') ||
-            !p.domain.isNullOrBlank()
+        val hasDomainOrUpn = username.contains('\\') || username.contains('@') ||
+            !domain.isNullOrBlank()
         if (isAzureAd) {
             args += "/sec:tls"
         } else {

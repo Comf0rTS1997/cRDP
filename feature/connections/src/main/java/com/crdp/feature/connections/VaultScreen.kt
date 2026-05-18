@@ -350,12 +350,16 @@ fun VaultEntryDialog(
                             }
                         }.ifBlank { "Credential" }
                     }
+                    // Trim username/domain (stray whitespace from paste lands in
+                    // TS_INFO_PACKET and breaks the Windows logon match on otherwise-
+                    // correct credentials) but NOT password — a literal trailing
+                    // space could be part of the real password on permissive policies.
                     onSave(
                         VaultEntry(
                             id = initial?.id.orEmpty(),
-                            displayName = derivedName,
-                            username = username,
-                            domain = domain.ifBlank { null },
+                            displayName = derivedName.trim(),
+                            username = username.trim(),
+                            domain = domain.trim().ifBlank { null },
                             password = password,
                         ),
                     )

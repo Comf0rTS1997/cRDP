@@ -130,6 +130,7 @@ dependencies {
     implementation(libs.androidx.biometric)
     implementation(libs.androidx.fragment)
     implementation(libs.androidx.security.crypto)
+    implementation(libs.tink.android)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
 

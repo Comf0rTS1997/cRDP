@@ -28,6 +28,7 @@ androidx-window = { group = "androidx.window", name = "window", version.ref = "w
 androidx-biometric = { group = "androidx.biometric", name = "biometric", version = "1.1.0" }
 androidx-fragment = { group = "androidx.fragment", name = "fragment-ktx", version = "1.8.5" }
 androidx-security-crypto = { group = "androidx.security", name = "security-crypto", version = "1.1.0-alpha06" }
+tink-android = { group = "com.google.crypto.tink", name = "tink-android", version = "1.8.0" }
 
 compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
 compose-ui = { group = "androidx.compose.ui", name = "ui" }

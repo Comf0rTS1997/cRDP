@@ -848,9 +848,30 @@ class AFreeRdpEngine @Inject constructor(
         if (p.keyboardLayoutId != 0) {
             args += "/kbd:lang:0x%04X".format(p.keyboardLayoutId)
         }
-        args += "/sec:nla"
-        // Restrict Negotiate SPNEGO to NTLM only; skips Kerberos (no KDC in direct-IP scenarios).
-        args += "/auth-pkg-list:ntlm"
+        // For Entra-joined ("Azure AD") hosts the server expects CredSSP to route
+        // through PKU2U, which this FreeRDP build doesn't ship a WinPR SSP for. The
+        // documented Microsoft workaround for non-PKU2U clients is to disable CredSSP
+        // and rely on the in-session logon screen, which maps to /sec:tls here — the
+        // /u: /p: are still delivered in the TS_INFO_PACKET so the user isn't asked
+        // twice. Requires the target host to allow non-NLA connections (the
+        // "Require Network Level Authentication" checkbox on the host must be off).
+        //
+        // For plain local/workgroup logins (no domain separator, no UPN) we keep
+        // NLA + NTLM-only to skip Kerberos KDC probes that can't resolve in direct-IP
+        // scenarios. Domain accounts go through NLA with the auth package unrestricted
+        // so Kerberos can be tried where a KDC is reachable.
+        val isAzureAd = p.username.startsWith("AzureAD\\", ignoreCase = true) ||
+            p.domain.equals("AzureAD", ignoreCase = true)
+        val hasDomainOrUpn = p.username.contains('\\') || p.username.contains('@') ||
+            !p.domain.isNullOrBlank()
+        if (isAzureAd) {
+            args += "/sec:tls"
+        } else {
+            args += "/sec:nla"
+            if (!hasDomainOrUpn) {
+                args += "/auth-pkg-list:ntlm"
+            }
+        }
         args += "/log-level:WARN"
         // Bump rdpdr + printer channel logs to DEBUG so we can see why the
         // virtual printer isn't appearing on the server. Override is per-tag

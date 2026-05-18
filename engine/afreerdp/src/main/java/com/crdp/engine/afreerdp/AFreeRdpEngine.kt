@@ -697,10 +697,23 @@ class AFreeRdpEngine @Inject constructor(
         return runBlocking { deferred.await() }
     }
 
+    private fun formatHostForFreeRdp(host: String): String {
+        val trimmed = host.trim()
+        if (trimmed.startsWith("[") && trimmed.endsWith("]")) return trimmed
+        val zoneStripped = trimmed.substringBefore('%')
+        val colonCount = zoneStripped.count { it == ':' }
+        return if (colonCount >= 2) "[$trimmed]" else trimmed
+    }
+
     private fun buildArgs(p: RdpConnectParams): Array<String> {
         val args = mutableListOf<String>()
         args += "freerdp"
-        args += "/v:${p.host}"
+        // FreeRDP's /v: parser splits on the last ':' to peel off an inline
+        // port, so a bare IPv6 literal like "fe80::1" is misread as host
+        // "fe80:" port ":1". RFC 3986 §3.2.2 brackets disambiguate; FreeRDP
+        // accepts /v:[fe80::1] for IPv6 (the user may also have typed the
+        // brackets themselves, so don't double-wrap).
+        args += "/v:${formatHostForFreeRdp(p.host)}"
         args += "/port:${p.port}"
         if (p.username.isNotBlank()) args += "/u:${p.username}"
         if (!p.domain.isNullOrBlank()) args += "/d:${p.domain}"

@@ -16,6 +16,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Accessibility
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Check
@@ -27,6 +28,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Monitor
 import androidx.compose.material.icons.filled.Mouse
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
@@ -64,6 +66,11 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
+import com.crdp.app.permissions.AppPermission
+import com.crdp.app.permissions.AppPermissions
+import com.crdp.app.permissions.PermissionStatus
+import com.crdp.app.permissions.rememberPermissionLauncher
 import com.crdp.app.prefs.AppSettings
 import com.crdp.app.prefs.AudioModes
 import com.crdp.app.prefs.AudioQualities
@@ -128,12 +135,17 @@ fun SettingsScreen(
     onGlyphCache: (Boolean) -> Unit,
     onPreferredEncoder: (String) -> Unit,
     onShowCaptureHint: (Boolean) -> Unit,
+    onEnableKeyInterceptor: (Boolean) -> Unit,
     onOpenVault: () -> Unit,
+    onOpenPermissions: () -> Unit,
     onOpenAbout: () -> Unit,
     onBack: () -> Unit,
 ) {
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
     var chooser by remember { mutableStateOf<ChooserKind?>(null) }
+    val ctx = LocalContext.current
+    val notifLauncher = rememberPermissionLauncher(AppPermission.Notifications)
+    var showAccessibilityDialog by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -155,6 +167,14 @@ fun SettingsScreen(
                 .padding(padding)
                 .verticalScroll(rememberScrollState()),
         ) {
+            SectionHeader("App")
+            SettingRow(
+                icon = Icons.Default.Security,
+                title = "Permissions",
+                subtitle = "Notifications, microphone, camera, accessibility",
+                onClick = onOpenPermissions,
+            )
+
             SectionHeader("Appearance")
             SettingRow(
                 icon = Icons.Default.Bolt,
@@ -210,7 +230,20 @@ fun SettingsScreen(
                 trailing = {
                     Switch(
                         checked = appSettings.defaultPrinterShare,
-                        onCheckedChange = onDefaultPrinterShare,
+                        onCheckedChange = { enabled ->
+                            onDefaultPrinterShare(enabled)
+                            // Notification permission is only needed for the
+                            // spool-watcher's "Print job spooled" notification.
+                            // Ask the first time printer share is turned on; if
+                            // already granted (or N/A on API < 33) the launcher
+                            // is a no-op.
+                            if (enabled &&
+                                AppPermissions.status(ctx, AppPermission.Notifications) ==
+                                PermissionStatus.Denied
+                            ) {
+                                notifLauncher()
+                            }
+                        },
                     )
                 },
             )
@@ -346,6 +379,25 @@ fun SettingsScreen(
                 },
             )
             SettingRow(
+                icon = Icons.Default.Accessibility,
+                title = "Hardware-key capture",
+                subtitle = "Intercept Alt+F4 / Win+L / Alt+Tab so they reach the remote desktop. Requires Accessibility access.",
+                trailing = {
+                    Switch(
+                        checked = appSettings.enableKeyInterceptor,
+                        onCheckedChange = { enabled ->
+                            onEnableKeyInterceptor(enabled)
+                            if (enabled &&
+                                AppPermissions.status(ctx, AppPermission.KeyInterceptor) !=
+                                PermissionStatus.Granted
+                            ) {
+                                showAccessibilityDialog = true
+                            }
+                        },
+                    )
+                },
+            )
+            SettingRow(
                 icon = Icons.Default.Keyboard,
                 title = "Keyboard helper row",
                 subtitle = "Keys shown above the soft keyboard",
@@ -472,6 +524,16 @@ fun SettingsScreen(
                 )
             }
         }
+    }
+
+    if (showAccessibilityDialog) {
+        AccessibilityNeededDialog(
+            onOpenSettings = {
+                AppPermissions.openAccessibilitySettings(ctx)
+                showAccessibilityDialog = false
+            },
+            onDismiss = { showAccessibilityDialog = false },
+        )
     }
 }
 

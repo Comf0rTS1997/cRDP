@@ -88,6 +88,13 @@ data class AppSettings(
      * gesture and finds the reminder noisy.
      */
     val showCaptureHint: Boolean = true,
+    /**
+     * Opt-in switch for the accessibility-backed hardware-key filter
+     * ([KeyInterceptorService]). Default off — the feature gates on the
+     * user explicitly enabling it AND the OS-side service being live, so
+     * mouse/keyboard input still works for users who never opt in.
+     */
+    val enableKeyInterceptor: Boolean = false,
     /** Name advertised to the remote session for the redirected printer. */
     val printerShareName: String = "cRDP",
     /**
@@ -279,6 +286,7 @@ class UserPreferencesRepository @Inject constructor(
     private val glyphCacheKey = booleanPreferencesKey("glyph_cache")
     private val preferredEncoderKey = stringPreferencesKey("preferred_encoder")
     private val showCaptureHintKey = booleanPreferencesKey("show_capture_hint")
+    private val enableKeyInterceptorKey = booleanPreferencesKey("enable_key_interceptor")
     private val printerShareNameKey = stringPreferencesKey("printer_share_name")
     /** Legacy boolean toggle. Read on first launch and migrated to [vaultProtectionKey]. */
     private val vaultEncryptionKey = booleanPreferencesKey("vault_encryption")
@@ -325,6 +333,7 @@ class UserPreferencesRepository @Inject constructor(
             glyphCache = prefs[glyphCacheKey] ?: true,
             preferredEncoder = prefs[preferredEncoderKey]?.takeIf { it in Encoders.OPTIONS } ?: Encoders.AUTO,
             showCaptureHint = prefs[showCaptureHintKey] ?: true,
+            enableKeyInterceptor = prefs[enableKeyInterceptorKey] ?: false,
             printerShareName = prefs[printerShareNameKey]?.takeIf { it.isNotBlank() } ?: "cRDP",
             vaultProtection = run {
                 val raw = prefs[vaultProtectionKey]
@@ -483,6 +492,10 @@ class UserPreferencesRepository @Inject constructor(
 
     suspend fun setShowCaptureHint(value: Boolean) {
         context.userPrefs.edit { it[showCaptureHintKey] = value }
+    }
+
+    suspend fun setEnableKeyInterceptor(value: Boolean) {
+        context.userPrefs.edit { it[enableKeyInterceptorKey] = value }
     }
 
     /** Trims and falls back to "cRDP" if empty so the server never sees a blank label. */

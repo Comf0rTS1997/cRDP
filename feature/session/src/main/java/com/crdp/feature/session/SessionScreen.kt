@@ -198,6 +198,13 @@ data class SessionUserSettings(
     val preferredEncoder: String = "Auto",
     /** Show the "Pointer captured — double-tap Esc to release" snackbar on capture engage. */
     val showCaptureHint: Boolean = true,
+    /**
+     * Opt-in switch for the accessibility-backed hardware-key filter. When
+     * false (default), the session does not register its key hook on the
+     * host activity, so [com.crdp.app.KeyInterceptorService] never engages
+     * even if the OS-side accessibility service is enabled.
+     */
+    val enableKeyInterceptor: Boolean = false,
 )
 
 @Composable
@@ -895,7 +902,9 @@ private fun SessionScreen(
 
     // Key on `transform` too: when the surface resizes (DeX, rotation), the captured
     // mouse-motion handler closes over the new transform on the next effect run.
-    DisposableEffect(sessionConnected, view, transform) {
+    // Also key on the user's hardware-key-capture opt-in so flipping it in
+    // settings mid-session immediately attaches or detaches the key hook.
+    DisposableEffect(sessionConnected, view, transform, settings.enableKeyInterceptor) {
         // Mouse-source touchpad/scroll work pre-O too via setOnGenericMotionListener;
         // pointer-capture-specific wiring is gated below.
         val genericListener = android.view.View.OnGenericMotionListener { _, ev ->
@@ -914,8 +923,11 @@ private fun SessionScreen(
         // Alt+Tab, Win+R, function keys). Plain Compose `onPreviewKeyEvent`
         // only fires when the composable has key focus, which is fragile in
         // the presence of pointer capture and surface focus shifts.
+        // Gated on the user's opt-in: when off, the hook is never registered,
+        // so KeyInterceptorService clears FLAG_REQUEST_FILTER_KEY_EVENTS and
+        // Android dispatches keys normally.
         val keyHost = context as? KeyEventHost
-        if (keyHost != null && sessionConnected) {
+        if (keyHost != null && sessionConnected && settings.enableKeyInterceptor) {
             keyHost.setKeyEventHook { ev -> handleSessionKeyEvent(ev) }
         }
 

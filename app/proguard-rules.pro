@@ -6,19 +6,50 @@
 
 # --- JNI / native ---------------------------------------------------------
 # Native methods themselves and the classes that own them must keep their
-# JNI-visible names. afreerdp's C side resolves Java callbacks by class +
-# method name, so the bridge packages stay un-renamed.
+# JNI-visible names. The C side resolves Java callbacks by class + method
+# name (Java_<FQCN>_<method> mangling), so any class that hosts an `external
+# fun` / `native` declaration OR receives a callback via GetStaticMethodID
+# must keep BOTH its FQCN and member names un-renamed and un-stripped.
 -keepclasseswithmembernames class * {
     native <methods>;
 }
+# Engine-side Kotlin packages: AFreeRdpEngine, NativeCameraBridge (rdpecam
+# DVC JNI), PrinterRedirectBridge (printer DVC JNI), SurfaceBlitter, etc.
 -keep class com.crdp.engine.afreerdp.** { *; }
+# core/rdp + core/rdp-engine: hosts CameraOrientationBridge (Kotlin sink the
+# engine module installs at startup; called from C indirectly via
+# LibFreeRDP.freerdp_set_camera_display_rotation), RdpConnectParams enums
+# (CameraRedirect, AudioPlayback, …) that buildArgs() switches on.
 -keep class com.crdp.core.rdp.** { *; }
 -keep class com.crdp.rdp.direct.** { *; }
+# Explicit per-bridge keeps. These are technically redundant with the
+# package-level keeps above, but spelled out so a future package refactor
+# can't silently break JNI:
+#
+#   rdpecam HAL (camera redirect):
+#     Java_com_crdp_engine_afreerdp_NativeCameraBridge_registerDevice
+#     Java_com_crdp_engine_afreerdp_NativeCameraBridge_unregisterDevice
+#     Java_com_crdp_engine_afreerdp_NativeCameraBridge_pushFrame
+#   printer HAL:
+#     Java_com_crdp_engine_afreerdp_PrinterRedirectBridge_setSpoolDir
+#     Java_com_crdp_engine_afreerdp_PrinterRedirectBridge_setPrinterName
+#
+# Kotlin `object` declarations also carry an INSTANCE static field that JNI
+# needs to dispatch instance methods through — covered by `{ *; }`.
+-keep class com.crdp.engine.afreerdp.NativeCameraBridge { *; }
+-keep class com.crdp.engine.afreerdp.PrinterRedirectBridge { *; }
+-keep class com.crdp.core.rdp.CameraOrientationBridge { *; }
 # FreeRDP JNI bridge: FQN (com.freerdp.freerdpcore.services.LibFreeRDP) and the
-# OnXxx/AdapterCallbacks members are resolved by name from libfreerdp-android.so.
-# Keeping the whole package also prevents R8 from making LibFreeRDP effectively
-# abstract (private ctor never called from kept code), which crashed JNI_OnLoad.
+# private static OnXxx callback methods (OnConnectionSuccess, OnGraphicsUpdate,
+# OnRemoteClipboardChanged, OnCursorBitmap, …) are resolved by name from
+# libfreerdp-android.so. The AdapterCallbacks inner interface must also keep
+# its method names so the dispatch table inside LibFreeRDP doesn't get
+# renamed out from under the C callers. Keeping the whole package also
+# prevents R8 from making LibFreeRDP effectively abstract (private ctor
+# never called from kept code), which crashed JNI_OnLoad.
 -keep class com.freerdp.freerdpcore.** { *; }
+-keep class com.freerdp.freerdpcore.services.LibFreeRDP { *; }
+-keep class com.freerdp.freerdpcore.services.LibFreeRDP$* { *; }
 
 # --- kotlinx.serialization ------------------------------------------------
 -keepattributes *Annotation*, InnerClasses

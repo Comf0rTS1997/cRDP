@@ -233,7 +233,6 @@ class MainActivity : FragmentActivity(), KeyEventHost {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        maybeRequestPostNotifications()
         setContent {
             val mainViewModel: MainViewModel = hiltViewModel()
             val dynamicColor by mainViewModel.dynamicColor.collectAsStateWithLifecycle()
@@ -432,8 +431,23 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                                 onGlyphCache = mainViewModel::setGlyphCache,
                                 onPreferredEncoder = mainViewModel::setPreferredEncoder,
                                 onShowCaptureHint = mainViewModel::setShowCaptureHint,
+                                onEnableKeyInterceptor = mainViewModel::setEnableKeyInterceptor,
                                 onOpenVault = { navController.navigate("settings/vault") },
+                                onOpenPermissions = { navController.navigate("settings/permissions") },
                                 onOpenAbout = { navController.navigate("settings/about") },
+                                onBack = { navController.popBackStack() },
+                            )
+                        }
+                        composable(
+                            route = "settings/permissions",
+                            enterTransition = { EnterTransition.None },
+                            exitTransition = { ExitTransition.None },
+                            popEnterTransition = { EnterTransition.None },
+                            popExitTransition = { ExitTransition.None },
+                        ) {
+                            PermissionsSettingsScreen(
+                                appSettings = appSettings,
+                                onEnableKeyInterceptor = mainViewModel::setEnableKeyInterceptor,
                                 onBack = { navController.popBackStack() },
                             )
                         }
@@ -598,6 +612,7 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                                     glyphCache = appSettings.glyphCache,
                                     preferredEncoder = appSettings.preferredEncoder,
                                     showCaptureHint = appSettings.showCaptureHint,
+                                    enableKeyInterceptor = appSettings.enableKeyInterceptor,
                                 ),
                             )
                         }
@@ -619,31 +634,6 @@ class MainActivity : FragmentActivity(), KeyEventHost {
         @JvmStatic
         @Volatile var activeInstance: MainActivity? = null
             private set
-
-        private const val POST_NOTIFICATIONS_REQUEST_CODE = 7041
-    }
-
-
-    /**
-     * Ask for POST_NOTIFICATIONS on first launch (Android 13+). Without this
-     * the PrinterSpoolWatcher's "Print job spooled" notifications are silently
-     * dropped by the framework — printer redirection still spools files to
-     * `printer_spool/` correctly, but the user never sees that anything
-     * happened. We don't block startup or gate any feature on the answer;
-     * if the user denies, the silent-spool behaviour is the same as before.
-     */
-    private fun maybeRequestPostNotifications() {
-        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.TIRAMISU) return
-        val granted = androidx.core.content.ContextCompat.checkSelfPermission(
-            this,
-            android.Manifest.permission.POST_NOTIFICATIONS,
-        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-        if (granted) return
-        androidx.core.app.ActivityCompat.requestPermissions(
-            this,
-            arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),
-            POST_NOTIFICATIONS_REQUEST_CODE,
-        )
     }
 }
 

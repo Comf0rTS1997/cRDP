@@ -190,6 +190,10 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch { userPreferencesRepository.setShowCaptureHint(value) }
     }
 
+    fun setEnableKeyInterceptor(value: Boolean) {
+        viewModelScope.launch { userPreferencesRepository.setEnableKeyInterceptor(value) }
+    }
+
     /**
      * Asynchronously probes whether the device can actually host an
      * auth-bound Keystore key. Off the main thread because the probe does a

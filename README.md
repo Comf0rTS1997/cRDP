@@ -93,3 +93,5 @@ cRDP is free software released under the
 It is built on top of [FreeRDP](https://www.freerdp.com/) and a number of
 other open-source components — see [THIRD_PARTY.md](THIRD_PARTY.md) for the
 full list, and the in-app About screen for per-component license text.
+
+The project is also heavy coded with Claude and Cursor.

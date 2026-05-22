@@ -41,6 +41,20 @@ data class AppSettings(
      * twice the travel (slower).
      */
     val touchpadScrollSpeed: Int = 100,
+    /**
+     * Cursor-movement multiplier for physical mouse / external trackpad input
+     * (captured-pointer relative deltas). 100 = match Android system pointer
+     * behavior (the session honors Settings.System.POINTER_SPEED and applies
+     * an Android-style velocity-based acceleration curve underneath). Set
+     * higher/lower to override the system feel. See [PointerSpeeds].
+     */
+    val mousePointerSpeed: Int = 100,
+    /**
+     * Cursor-movement multiplier for the on-screen simulated touchpad (Trackpad
+     * input mode — single-finger drag moves the virtual cursor). 100 =
+     * unchanged. See [PointerSpeeds].
+     */
+    val touchpadPointerSpeed: Int = 100,
     val autoDisconnectIdle: Boolean = false,
     val defaultResolution: String = "Match device",
     val keyboardLayout: String = "US English",
@@ -236,6 +250,20 @@ object ScrollSpeeds {
     fun label(value: Int): String = "$value%"
 }
 
+/**
+ * Cursor-movement multipliers (as percents) for the physical-mouse and
+ * simulated-touchpad pointer-speed settings. Mirrors [ScrollSpeeds] in shape
+ * but kept separate so cursor tuning is independent of wheel tuning.
+ */
+object PointerSpeeds {
+    const val MIN = 25
+    const val MAX = 1000
+    const val DEFAULT = 100
+    val OPTIONS = listOf(25, 50, 100, 150, 200, 300, 400, 600, 800, 1000)
+    fun coerce(value: Int): Int = value.coerceIn(MIN, MAX)
+    fun label(value: Int): String = "$value%"
+}
+
 object AutoLockVault {
     const val IMMEDIATELY = 0
     const val NEVER = -1
@@ -261,6 +289,8 @@ class UserPreferencesRepository @Inject constructor(
     private val reverseScrollKey = booleanPreferencesKey("reverse_scroll")
     private val mouseWheelSpeedKey = intPreferencesKey("mouse_wheel_speed")
     private val touchpadScrollSpeedKey = intPreferencesKey("touchpad_scroll_speed")
+    private val mousePointerSpeedKey = intPreferencesKey("mouse_pointer_speed")
+    private val touchpadPointerSpeedKey = intPreferencesKey("touchpad_pointer_speed")
     private val autoDisconnectKey = booleanPreferencesKey("auto_disconnect_idle")
     private val defaultResolutionKey = stringPreferencesKey("default_resolution")
     private val keyboardLayoutKey = stringPreferencesKey("keyboard_layout")
@@ -308,6 +338,8 @@ class UserPreferencesRepository @Inject constructor(
             reverseScroll = prefs[reverseScrollKey] ?: false,
             mouseWheelSpeed = ScrollSpeeds.coerce(prefs[mouseWheelSpeedKey] ?: ScrollSpeeds.DEFAULT),
             touchpadScrollSpeed = ScrollSpeeds.coerce(prefs[touchpadScrollSpeedKey] ?: ScrollSpeeds.DEFAULT),
+            mousePointerSpeed = PointerSpeeds.coerce(prefs[mousePointerSpeedKey] ?: 100),
+            touchpadPointerSpeed = PointerSpeeds.coerce(prefs[touchpadPointerSpeedKey] ?: 100),
             autoDisconnectIdle = prefs[autoDisconnectKey] ?: false,
             defaultResolution = prefs[defaultResolutionKey] ?: "Match device",
             keyboardLayout = prefs[keyboardLayoutKey] ?: "US English",
@@ -378,6 +410,14 @@ class UserPreferencesRepository @Inject constructor(
 
     suspend fun setTouchpadScrollSpeed(value: Int) {
         context.userPrefs.edit { it[touchpadScrollSpeedKey] = ScrollSpeeds.coerce(value) }
+    }
+
+    suspend fun setMousePointerSpeed(value: Int) {
+        context.userPrefs.edit { it[mousePointerSpeedKey] = PointerSpeeds.coerce(value) }
+    }
+
+    suspend fun setTouchpadPointerSpeed(value: Int) {
+        context.userPrefs.edit { it[touchpadPointerSpeedKey] = PointerSpeeds.coerce(value) }
     }
 
     suspend fun setAutoDisconnectIdle(value: Boolean) {

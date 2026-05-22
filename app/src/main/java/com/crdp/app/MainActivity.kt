@@ -476,6 +476,8 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                                 onReverseScroll = mainViewModel::setReverseScroll,
                                 onMouseWheelSpeed = mainViewModel::setMouseWheelSpeed,
                                 onTouchpadScrollSpeed = mainViewModel::setTouchpadScrollSpeed,
+                                onMousePointerSpeed = mainViewModel::setMousePointerSpeed,
+                                onTouchpadPointerSpeed = mainViewModel::setTouchpadPointerSpeed,
                                 onBack = { navController.popBackStack() },
                             )
                         }
@@ -573,6 +575,8 @@ class MainActivity : FragmentActivity(), KeyEventHost {
                                     reverseScroll = appSettings.reverseScroll,
                                     mouseWheelSpeedPercent = appSettings.mouseWheelSpeed,
                                     touchpadScrollSpeedPercent = appSettings.touchpadScrollSpeed,
+                                    mousePointerSpeedPercent = appSettings.mousePointerSpeed,
+                                    touchpadPointerSpeedPercent = appSettings.touchpadPointerSpeed,
                                     autoDisconnectIdle = appSettings.autoDisconnectIdle,
                                     renderOptions = RenderOptions(
                                         backend = when (appSettings.renderBackend) {

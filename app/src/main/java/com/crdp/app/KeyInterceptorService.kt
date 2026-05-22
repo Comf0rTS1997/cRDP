@@ -5,9 +5,11 @@ import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import android.view.KeyEvent
+import android.view.ViewConfiguration
 import android.view.accessibility.AccessibilityEvent
 
 /**
@@ -40,6 +42,55 @@ class KeyInterceptorService : AccessibilityService() {
     private val pressedKeys = LinkedHashSet<Int>()
     private var filterEnabled = false
 
+    // Synthetic key-repeat state. With FLAG_REQUEST_FILTER_KEY_EVENTS the
+    // service sits in the input pipeline BEFORE InputDispatcher's repeat-
+    // synthesis stage, so consuming a DOWN means the OS will never generate
+    // the follow-up auto-repeat DOWN events. We re-create them here so a
+    // held key in-session types like it would natively. Matches Android's
+    // default cadence: ~400ms initial delay, then ~50ms per repeat.
+    private val repeatHandler = Handler(Looper.getMainLooper())
+    private var repeatingPrototype: KeyEvent? = null
+    private var repeatingCount: Int = 0
+    private val repeatRunnable = object : Runnable {
+        override fun run() {
+            val proto = repeatingPrototype ?: return
+            val activity = MainActivity.activeInstance ?: run { stopRepeat(); return }
+            if (!activity.shouldInterceptKeys()) { stopRepeat(); return }
+            repeatingCount += 1
+            val synthetic = KeyEvent(
+                proto.downTime,
+                SystemClock.uptimeMillis(),
+                KeyEvent.ACTION_DOWN,
+                proto.keyCode,
+                repeatingCount,
+                proto.metaState,
+                proto.deviceId,
+                proto.scanCode,
+                proto.flags,
+                proto.source,
+            )
+            activity.dispatchInterceptedKey(synthetic)
+            repeatHandler.postDelayed(this, REPEAT_INTERVAL_MS)
+        }
+    }
+
+    private fun startRepeat(event: KeyEvent) {
+        stopRepeat()
+        // Repeating modifier keys does nothing useful for the remote (Windows
+        // doesn't auto-repeat shift/ctrl/alt/meta either), and synthesizing
+        // them risks confusing in-session shortcut handling.
+        if (KeyEvent.isModifierKey(event.keyCode)) return
+        repeatingPrototype = event
+        repeatingCount = 0
+        repeatHandler.postDelayed(repeatRunnable, INITIAL_REPEAT_DELAY_MS)
+    }
+
+    private fun stopRepeat() {
+        repeatHandler.removeCallbacks(repeatRunnable)
+        repeatingPrototype = null
+        repeatingCount = 0
+    }
+
     override fun onServiceConnected() {
         instance = this
         Log.d(TAG, "Accessibility key filter service connected")
@@ -48,6 +99,7 @@ class KeyInterceptorService : AccessibilityService() {
 
     override fun onDestroy() {
         instance = null
+        stopRepeat()
         pressedKeys.clear()
         super.onDestroy()
     }
@@ -57,6 +109,7 @@ class KeyInterceptorService : AccessibilityService() {
         if (activity == null) {
             // Activity gone — release any tracked modifiers and pass through.
             if (event.action == KeyEvent.ACTION_UP) pressedKeys.remove(event.keyCode)
+            stopRepeat()
             return false
         }
         val intercept = activity.shouldInterceptKeys()
@@ -71,8 +124,15 @@ class KeyInterceptorService : AccessibilityService() {
 
         if (intercept && event.action == KeyEvent.ACTION_DOWN) {
             pressedKeys.add(event.keyCode)
+            // Only kick off repeats for the genuine initial press. Real OS
+            // repeats arrive with repeatCount > 0 — those we'd never see
+            // here anyway because they're synthesized downstream — but the
+            // guard keeps us safe if a host (e.g. dispatchKeyEvent path)
+            // ever fans an event through with repeatCount preset.
+            if (event.repeatCount == 0 && handled) startRepeat(event)
         } else if (event.action == KeyEvent.ACTION_UP) {
             pressedKeys.remove(event.keyCode)
+            if (repeatingPrototype?.keyCode == event.keyCode) stopRepeat()
         }
 
         recheck()
@@ -85,6 +145,12 @@ class KeyInterceptorService : AccessibilityService() {
     companion object {
         private const val TAG = "cRdpKeyInterceptor"
         private const val SERVICE_CLASS = "com.crdp.app.KeyInterceptorService"
+
+        /** Mirrors [ViewConfiguration.getKeyRepeatTimeout] / `getKeyRepeatDelay`. */
+        private val INITIAL_REPEAT_DELAY_MS: Long =
+            ViewConfiguration.getKeyRepeatTimeout().toLong()
+        private val REPEAT_INTERVAL_MS: Long =
+            ViewConfiguration.getKeyRepeatDelay().toLong()
 
         @Volatile private var instance: KeyInterceptorService? = null
 

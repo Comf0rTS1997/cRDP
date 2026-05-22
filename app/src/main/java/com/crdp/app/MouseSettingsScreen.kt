@@ -10,7 +10,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Mouse
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.SwapVert
+import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -35,12 +37,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.dp
 import com.crdp.app.prefs.AppSettings
+import com.crdp.app.prefs.PointerSpeeds
 import com.crdp.app.prefs.ScrollSpeeds
 import kotlinx.coroutines.launch
 
 private sealed interface MousePicker {
     data object WheelSpeed : MousePicker
     data object TouchpadSpeed : MousePicker
+    data object MousePointerSpeed : MousePicker
+    data object TouchpadPointerSpeed : MousePicker
 }
 
 /**
@@ -57,6 +62,8 @@ fun MouseSettingsScreen(
     onReverseScroll: (Boolean) -> Unit,
     onMouseWheelSpeed: (Int) -> Unit,
     onTouchpadScrollSpeed: (Int) -> Unit,
+    onMousePointerSpeed: (Int) -> Unit,
+    onTouchpadPointerSpeed: (Int) -> Unit,
     onBack: () -> Unit,
 ) {
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
@@ -97,7 +104,7 @@ fun MouseSettingsScreen(
                 },
             )
 
-            SectionHeader("Speed")
+            SectionHeader("Scroll speed")
             SettingRow(
                 icon = Icons.Default.Mouse,
                 title = "Mouse wheel speed",
@@ -111,6 +118,22 @@ fun MouseSettingsScreen(
                 subtitle = "Sensitivity of two-finger scroll in trackpad mode",
                 value = ScrollSpeeds.label(appSettings.touchpadScrollSpeed),
                 onClick = { picker = MousePicker.TouchpadSpeed },
+            )
+
+            SectionHeader("Pointer speed")
+            SettingRow(
+                icon = Icons.Default.Speed,
+                title = "Mouse pointer speed",
+                subtitle = "100% matches Android system feel (honors OS pointer-speed setting + acceleration)",
+                value = PointerSpeeds.label(appSettings.mousePointerSpeed),
+                onClick = { picker = MousePicker.MousePointerSpeed },
+            )
+            SettingRow(
+                icon = Icons.Default.TouchApp,
+                title = "Touchpad pointer speed",
+                subtitle = "Cursor-movement multiplier when dragging on the on-screen trackpad",
+                value = PointerSpeeds.label(appSettings.touchpadPointerSpeed),
+                onClick = { picker = MousePicker.TouchpadPointerSpeed },
             )
         }
     }
@@ -132,13 +155,31 @@ fun MouseSettingsScreen(
             when (active) {
                 MousePicker.WheelSpeed -> SpeedPicker(
                     title = "Mouse wheel speed",
+                    options = ScrollSpeeds.OPTIONS,
+                    labelFor = ScrollSpeeds::label,
                     selected = appSettings.mouseWheelSpeed,
                     onSelect = { onMouseWheelSpeed(it); dismiss() },
                 )
                 MousePicker.TouchpadSpeed -> SpeedPicker(
                     title = "Touchpad scroll speed",
+                    options = ScrollSpeeds.OPTIONS,
+                    labelFor = ScrollSpeeds::label,
                     selected = appSettings.touchpadScrollSpeed,
                     onSelect = { onTouchpadScrollSpeed(it); dismiss() },
+                )
+                MousePicker.MousePointerSpeed -> SpeedPicker(
+                    title = "Mouse pointer speed",
+                    options = PointerSpeeds.OPTIONS,
+                    labelFor = PointerSpeeds::label,
+                    selected = appSettings.mousePointerSpeed,
+                    onSelect = { onMousePointerSpeed(it); dismiss() },
+                )
+                MousePicker.TouchpadPointerSpeed -> SpeedPicker(
+                    title = "Touchpad pointer speed",
+                    options = PointerSpeeds.OPTIONS,
+                    labelFor = PointerSpeeds::label,
+                    selected = appSettings.touchpadPointerSpeed,
+                    onSelect = { onTouchpadPointerSpeed(it); dismiss() },
                 )
             }
         }
@@ -148,6 +189,8 @@ fun MouseSettingsScreen(
 @Composable
 private fun SpeedPicker(
     title: String,
+    options: List<Int>,
+    labelFor: (Int) -> String,
     selected: Int,
     onSelect: (Int) -> Unit,
 ) {
@@ -157,9 +200,9 @@ private fun SpeedPicker(
             style = MaterialTheme.typography.titleMedium,
             modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
         )
-        ScrollSpeeds.OPTIONS.forEach { value ->
+        options.forEach { value ->
             ListItem(
-                headlineContent = { Text(ScrollSpeeds.label(value)) },
+                headlineContent = { Text(labelFor(value)) },
                 trailingContent = {
                     if (value == selected) {
                         Icon(

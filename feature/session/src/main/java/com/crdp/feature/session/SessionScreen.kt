@@ -2,6 +2,7 @@ package com.crdp.feature.session
 
 import android.app.Activity
 import android.os.Build
+import android.provider.Settings
 import android.util.Log
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -155,6 +156,16 @@ data class SessionUserSettings(
     val mouseWheelSpeedPercent: Int = 100,
     /** Percent multiplier for two-finger touchpad scroll sensitivity. 100 = unchanged. */
     val touchpadScrollSpeedPercent: Int = 100,
+    /**
+     * Percent multiplier for physical mouse / external trackpad cursor motion
+     * (captured-pointer relative deltas). 100 = unchanged.
+     */
+    val mousePointerSpeedPercent: Int = 100,
+    /**
+     * Percent multiplier for the on-screen simulated touchpad — single-finger
+     * drag in Trackpad mode that moves the virtual cursor. 100 = unchanged.
+     */
+    val touchpadPointerSpeedPercent: Int = 100,
     val autoDisconnectIdle: Boolean = false,
     val renderOptions: com.crdp.core.rdp.engine.RenderOptions = com.crdp.core.rdp.engine.RenderOptions(),
     /** App-wide default DPI percent (100..500) when the profile doesn't override. */
@@ -570,6 +581,29 @@ private fun SessionScreen(
     // Per-detent multiplier for physical mouse wheel events. Independent of
     // the touchpad sensitivity above.
     val mouseWheelScale: Float = settings.mouseWheelSpeedPercent / 100f
+    // Cursor-movement multipliers. Physical applies to captured-pointer relative
+    // deltas (real mouse / external touchpad). Touchpad applies to single-finger
+    // drag in on-screen Trackpad mode.
+    val mousePointerScale: Float = settings.mousePointerSpeedPercent / 100f
+    val touchpadPointerScale: Float = settings.touchpadPointerSpeedPercent / 100f
+    // Mirror Android's Settings.System.POINTER_SPEED (range -7..+7, default 0)
+    // so the captured-mouse cursor honors the OS-level "Mouse pointer speed"
+    // slider users may have set in Settings → Accessibility → Mouse. Without
+    // this, captured deltas arrive raw (unaccelerated by InputDispatcher) and
+    // the cursor feels uniformly slow regardless of system preference. AOSP's
+    // historical mapping is gain = 1.2^POINTER_SPEED.
+    val systemPointerGain: Float = remember(context) {
+        // Settings.System.POINTER_SPEED is @hide in the SDK; the underlying
+        // setting key has always been the literal "pointer_speed".
+        val raw = runCatching {
+            Settings.System.getInt(context.contentResolver, "pointer_speed", 0)
+        }.getOrDefault(0).coerceIn(-7, 7)
+        Math.pow(1.2, raw.toDouble()).toFloat()
+    }
+    // Pixel→dp conversion for the velocity-based ballistic curve below. Android's
+    // pointer acceleration is keyed on speed in dp/ms (density-independent) so
+    // the same physical mouse feels consistent across DPIs.
+    val dpPerPx: Float = 1f / density.density
     // ~24dp change in finger spread = one Ctrl+wheel zoom step.
     val pinchPxPerDetent = with(density) { 24.dp.toPx() }
     // Trackpad: a second tap that starts within this window of the first tap's UP
@@ -597,6 +631,16 @@ private fun SessionScreen(
     // transitions for left/right/middle separately when a hardware mouse delivers
     // events through dispatchCapturedPointerEvent or dispatchGenericMotionEvent.
     var lastMouseButtons by remember { mutableStateOf(0) }
+    // Sub-pixel remainder for the captured-mouse path. AXIS_RELATIVE_X/Y arrives
+    // integer-quantized on most Android builds; with the pointer-speed multiplier
+    // <1 (or invScale*mult producing fractional steps) we'd otherwise lose the
+    // fractional part on every event and the cursor would feel laggy. Carrying
+    // the remainder across events keeps motion smooth at any multiplier.
+    var captRemX by remember { mutableStateOf(0f) }
+    var captRemY by remember { mutableStateOf(0f) }
+    // Last sample timestamp (uptimeMillis) for velocity-based ballistics on the
+    // captured-mouse path. 0 = "no prior sample, treat this one as slow".
+    var captLastTimeMs by remember { mutableStateOf(0L) }
 
     fun markInteraction() {
         lastInteractionAt = System.currentTimeMillis()
@@ -623,49 +667,114 @@ private fun SessionScreen(
     fun handleHardwareMouseMotion(ev: MotionEvent, captured: Boolean): Boolean {
         val action = ev.actionMasked
 
-        // Update virtual cursor position from this event.
-        when (action) {
-            MotionEvent.ACTION_HOVER_ENTER,
-            MotionEvent.ACTION_HOVER_MOVE,
-            MotionEvent.ACTION_HOVER_EXIT,
-            MotionEvent.ACTION_DOWN,
-            MotionEvent.ACTION_MOVE,
-            MotionEvent.ACTION_UP,
-            MotionEvent.ACTION_BUTTON_PRESS,
-            MotionEvent.ACTION_BUTTON_RELEASE -> {
-                if (captured) {
-                    val dx = ev.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
-                    val dy = ev.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
-                    cursorX = (cursorX + dx).coerceIn(0f, rdpW.toFloat())
-                    cursorY = (cursorY + dy).coerceIn(0f, rdpH.toFloat())
-                } else if (transform.scale > 0f) {
-                    val (rx, ry) = transform.toRdp(ev.x, ev.y)
-                    cursorX = rx.coerceIn(0f, rdpW.toFloat())
-                    cursorY = ry.coerceIn(0f, rdpH.toFloat())
-                }
-            }
-        }
-
-        // Emit movement first so the server cursor is at the new position before
-        // a button transition lands. Skip on button-only events.
         val isMotionAction = action == MotionEvent.ACTION_HOVER_MOVE ||
             action == MotionEvent.ACTION_HOVER_ENTER ||
             action == MotionEvent.ACTION_MOVE ||
             action == MotionEvent.ACTION_DOWN ||
             action == MotionEvent.ACTION_UP
-        if (isMotionAction) {
+
+        // Update virtual cursor position from this event. For the captured path
+        // we drain historical samples so the cursor sees every HID poll instead
+        // of only the final batched value — at high multipliers (e.g. 400% on a
+        // 3440x1440 monitor) skipping history makes the cursor visibly stair-
+        // step because each surviving sample becomes a large jump.
+        if (captured) {
+            // Android delivers AXIS_RELATIVE_X/Y in (integer-quantized) device
+            // pixels with NO acceleration applied (captured mode is opt-in raw
+            // input for apps that want to roll their own ballistics — games,
+            // remote desktops). We replicate Android's behavior in three parts:
+            //   1. systemPointerGain — honors Settings.System.POINTER_SPEED so
+            //      the user's OS-level "mouse speed" slider works here too.
+            //   2. ballistic curve — non-linear gain keyed on velocity in dp/ms,
+            //      approximating Android 14+'s default acceleration: slow motion
+            //      stays ~1:1 for precision, fast motion ramps to ~3× for travel.
+            //   3. invScale — maps screen-pixel cursor delta to RDP-pixel cursor
+            //      delta so a 3440x1440 session downscaled to a smaller surface
+            //      doesn't feel sluggish.
+            // The user-tunable mousePointerScale rides on top for personal
+            // preference; captRemX/Y carries sub-pixel remainder so fractional
+            // steps aren't lost between events.
+            val invScale = if (transform.scale > 0f) 1f / transform.scale else 1f
+            val staticGain = invScale * mousePointerScale * systemPointerGain
             val dragging = ev.buttonState != 0
-            port.onPointerEvent(
-                PointerEvent(
-                    x = cursorX,
-                    y = cursorY,
-                    action = if (dragging) PointerAction.Move else PointerAction.Hover,
-                    buttons = 0,
-                    wheelDelta = 0f,
-                    wheelDeltaH = 0f,
-                ),
+            val historySize = ev.historySize
+            // Approximation of Android 14+'s MouseCursorAccelerationCurve default
+            // segments. Below ~3.5 dp/ms keep 1× (cursor stays predictable for
+            // small adjustments). 3.5–9 dp/ms ramps linearly to 3×. Above 9
+            // clamps at 3× so a fast flick can't slingshot past the edge.
+            fun ballistic(speedDpPerMs: Float): Float = when {
+                speedDpPerMs <= 3.5f -> 1f
+                speedDpPerMs >= 9f -> 3f
+                else -> 1f + (speedDpPerMs - 3.5f) * (2f / 5.5f)
+            }
+            // Accumulate cursor position across all samples in this batch but
+            // emit only ONE PointerEvent at the end. RDP cursor input goes
+            // through a synchronous JNI call per event (FreeRDP's input pipe);
+            // dispatching one per HID sample at 1000Hz overruns the queue and
+            // crashes the engine. Server-side cursor renders at the remote's
+            // refresh rate anyway, so >60Hz emit gains nothing visible.
+            fun applySample(rawDx: Float, rawDy: Float, sampleTimeMs: Long) {
+                val prev = captLastTimeMs
+                captLastTimeMs = sampleTimeMs
+                // Clamp dt: 0 (same-timestamp burst) or a long pause both fall
+                // back to a 16ms slow-motion approximation so velocity stays
+                // sane. Bursts of same-timestamp samples are common when
+                // multiple HID polls land in one MotionEvent.
+                val dtMs = if (prev <= 0L) 16f
+                else (sampleTimeMs - prev).coerceIn(1L, 64L).toFloat()
+                val speedPxPerMs = kotlin.math.sqrt(rawDx * rawDx + rawDy * rawDy) / dtMs
+                val speedDpPerMs = speedPxPerMs * dpPerPx
+                val gain = staticGain * ballistic(speedDpPerMs)
+                captRemX += rawDx * gain
+                captRemY += rawDy * gain
+                cursorX = (cursorX + captRemX).coerceIn(0f, rdpW.toFloat())
+                cursorY = (cursorY + captRemY).coerceIn(0f, rdpH.toFloat())
+                captRemX = 0f
+                captRemY = 0f
+            }
+            for (i in 0 until historySize) {
+                applySample(
+                    ev.getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_X, i),
+                    ev.getHistoricalAxisValue(MotionEvent.AXIS_RELATIVE_Y, i),
+                    ev.getHistoricalEventTime(i),
+                )
+            }
+            applySample(
+                ev.getAxisValue(MotionEvent.AXIS_RELATIVE_X),
+                ev.getAxisValue(MotionEvent.AXIS_RELATIVE_Y),
+                ev.eventTime,
             )
-            markInteraction()
+            if (isMotionAction) {
+                port.onPointerEvent(
+                    PointerEvent(
+                        x = cursorX,
+                        y = cursorY,
+                        action = if (dragging) PointerAction.Move else PointerAction.Hover,
+                        buttons = 0,
+                        wheelDelta = 0f,
+                        wheelDeltaH = 0f,
+                    ),
+                )
+                markInteraction()
+            }
+        } else {
+            if (isMotionAction && transform.scale > 0f) {
+                val (rx, ry) = transform.toRdp(ev.x, ev.y)
+                cursorX = rx.coerceIn(0f, rdpW.toFloat())
+                cursorY = ry.coerceIn(0f, rdpH.toFloat())
+                val dragging = ev.buttonState != 0
+                port.onPointerEvent(
+                    PointerEvent(
+                        x = cursorX,
+                        y = cursorY,
+                        action = if (dragging) PointerAction.Move else PointerAction.Hover,
+                        buttons = 0,
+                        wheelDelta = 0f,
+                        wheelDeltaH = 0f,
+                    ),
+                )
+                markInteraction()
+            }
         }
 
         // Button-state transitions → per-button Down/Up. MotionEvent.buttonState is a
@@ -1391,9 +1500,9 @@ private fun SessionScreen(
                                 when (inputMode) {
                                     InputMode.Trackpad -> {
                                         if (transform.scale > 0f) {
-                                            cursorX = (cursorX + dx / transform.scale)
+                                            cursorX = (cursorX + dx * touchpadPointerScale / transform.scale)
                                                 .coerceIn(0f, rdpW.toFloat())
-                                            cursorY = (cursorY + dy / transform.scale)
+                                            cursorY = (cursorY + dy * touchpadPointerScale / transform.scale)
                                                 .coerceIn(0f, rdpH.toFloat())
                                         }
                                         port.onPointerEvent(

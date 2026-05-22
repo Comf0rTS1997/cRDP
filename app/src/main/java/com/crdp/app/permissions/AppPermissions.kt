@@ -26,32 +26,39 @@ enum class PermissionStatus { Granted, Denied, NotApplicable }
  * [manifestName] is `null` and [AppPermissions.status] resolves it via
  * [AppPermissions.isAccessibilityServiceEnabled].
  */
-sealed class AppPermission(
+/**
+ * Enum (not a sealed class of `data object`s) so R8 release minification can't
+ * strip the per-entry INSTANCE singletons — that crashed the Permissions
+ * screen with "parameter permission is null" when the companion's `entries`
+ * list materialized with null members. Enum entries are statically reified
+ * by the JVM and survive any R8 pass.
+ */
+enum class AppPermission(
     val manifestName: String?,
     val featureLabel: String,
     val featureDescription: String,
     val minSdk: Int = 1,
 ) {
-    data object Notifications : AppPermission(
+    Notifications(
         manifestName = Manifest.permission.POST_NOTIFICATIONS,
         featureLabel = "Notifications",
         featureDescription = "Used when printer share is enabled, to show a notification when a remote print job is spooled.",
         minSdk = Build.VERSION_CODES.TIRAMISU,
-    )
+    ),
 
-    data object Microphone : AppPermission(
+    Microphone(
         manifestName = Manifest.permission.RECORD_AUDIO,
         featureLabel = "Microphone",
         featureDescription = "Used when a session has microphone redirection enabled.",
-    )
+    ),
 
-    data object Camera : AppPermission(
+    Camera(
         manifestName = Manifest.permission.CAMERA,
         featureLabel = "Camera",
         featureDescription = "Used when a session has camera redirection enabled.",
-    )
+    ),
 
-    data object KeyInterceptor : AppPermission(
+    KeyInterceptor(
         manifestName = null,
         featureLabel = "Hardware-key capture",
         featureDescription =
@@ -59,22 +66,23 @@ sealed class AppPermission(
                 "while a session is active, so they reach the remote desktop instead " +
                 "of Android. Backed by an Accessibility service that only filters key " +
                 "events — it does not observe screen content.",
-    )
+    );
 
     companion object {
-        val ALL: List<AppPermission> = listOf(Notifications, Microphone, Camera, KeyInterceptor)
+        val ALL: List<AppPermission> = entries.toList()
     }
 }
 
 object AppPermissions {
 
     /**
-     * SERVICE_ID matches the one used inside KeyInterceptorService for the
-     * Settings.Secure auto-enable path. Kept in sync manually because that
-     * file lives in the same module and there is no shared constant.
+     * Class name of the accessibility-backed key interceptor. The full
+     * ComponentName is built per-context using [Context.getPackageName] so
+     * .debug / .staging variants resolve to their own service registration
+     * instead of looking for the release package.
      */
-    private const val KEY_INTERCEPTOR_SERVICE_ID =
-        "com.crdp.android/com.crdp.app.KeyInterceptorService"
+    private const val KEY_INTERCEPTOR_SERVICE_CLASS =
+        "com.crdp.app.KeyInterceptorService"
 
     fun status(context: Context, permission: AppPermission): PermissionStatus {
         if (Build.VERSION.SDK_INT < permission.minSdk) return PermissionStatus.NotApplicable
@@ -100,7 +108,7 @@ object AppPermissions {
         // ENABLED_ACCESSIBILITY_SERVICES is a colon-separated list of
         // ComponentName flattened strings. Compare structurally so a future
         // rename of the service class still matches by ComponentName equality.
-        val target = ComponentName.unflattenFromString(KEY_INTERCEPTOR_SERVICE_ID) ?: return false
+        val target = ComponentName(context.packageName, KEY_INTERCEPTOR_SERVICE_CLASS)
         return enabled.split(':').any {
             ComponentName.unflattenFromString(it) == target
         }

@@ -41,8 +41,8 @@ android {
         applicationId = "com.crdp.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.1.2"
+        versionCode = 8
+        versionName = "0.1.7"
         if (crdpEngine == "afreerdp") {
             ndk {
                 abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
@@ -77,6 +77,13 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+        }
+        debug {
+            // Distinct applicationId so the debug build installs alongside
+            // the signed release (different UID, different DataStore, separate
+            // Accessibility-service registration).
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
         }
     }
 

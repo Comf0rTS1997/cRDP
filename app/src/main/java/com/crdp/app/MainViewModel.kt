@@ -90,6 +90,14 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch { userPreferencesRepository.setTouchpadScrollSpeed(value) }
     }
 
+    fun setMousePointerSpeed(value: Int) {
+        viewModelScope.launch { userPreferencesRepository.setMousePointerSpeed(value) }
+    }
+
+    fun setTouchpadPointerSpeed(value: Int) {
+        viewModelScope.launch { userPreferencesRepository.setTouchpadPointerSpeed(value) }
+    }
+
     fun setAutoDisconnectIdle(value: Boolean) {
         viewModelScope.launch { userPreferencesRepository.setAutoDisconnectIdle(value) }
     }

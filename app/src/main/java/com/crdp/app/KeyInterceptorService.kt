@@ -84,7 +84,7 @@ class KeyInterceptorService : AccessibilityService() {
 
     companion object {
         private const val TAG = "cRdpKeyInterceptor"
-        private const val SERVICE_ID = "com.crdp.android/com.crdp.app.KeyInterceptorService"
+        private const val SERVICE_CLASS = "com.crdp.app.KeyInterceptorService"
 
         @Volatile private var instance: KeyInterceptorService? = null
 
@@ -126,11 +126,12 @@ class KeyInterceptorService : AccessibilityService() {
         fun tryAutoEnable(ctx: Context): Boolean {
             return try {
                 val resolver = ctx.contentResolver
+                val serviceId = "${ctx.packageName}/$SERVICE_CLASS"
                 val current = Settings.Secure.getString(
                     resolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES,
                 ).orEmpty()
-                if (!current.contains(SERVICE_ID)) {
-                    val next = if (current.isEmpty()) SERVICE_ID else "$current:$SERVICE_ID"
+                if (!current.contains(serviceId)) {
+                    val next = if (current.isEmpty()) serviceId else "$current:$serviceId"
                     Settings.Secure.putString(
                         resolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, next,
                     )
